@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Run unit and service-worker mock tests
+        run: npm test
+      - name: Check JavaScript syntax
+        run: |
+          for file in extension/*.js; do node --check "$file"; done
+      - name: Verify tag and build distribution
+        run: python scripts/package_release.py --tag "$GITHUB_REF_NAME"
+      - name: Publish release with ZIP and checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/vrc-gathering-${GITHUB_REF_NAME}.zip" \
+            "dist/vrc-gathering-${GITHUB_REF_NAME}.zip.sha256" \
+            --verify-tag \
+            --title "${GITHUB_REF_NAME} — First release" \
+            --notes-file RELEASE_NOTES.md \
+            --latest

@@ -1,0 +1,148 @@
+import { DEFAULTS, csv, VERSION } from './core.js';
+import { list, timeline, exportAccount } from './db.js';
+import { demoData } from './demo.js';
+
+const $ = id => document.getElementById(id), isDemo = new URLSearchParams(location.search).get('demo') === '1';
+const dateFormat = new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
+const date = v => v ? dateFormat.format(v) : '未確認';
+const iso = v => v ? new Date(v).toISOString() : '';
+const presenceNames = { online:'ゲーム内', active:'Web／アプリ', offline:'オフライン', unknown:'不明' };
+const statusNames = { active:'オンライン', 'join me':'Join Me', 'ask me':'Ask Me', busy:'取り込み中', offline:'オフライン' };
+const accessNames = { public:'Public', friends:'Friends', 'friends-plus':'Friends+', invite:'Invite', 'invite-plus':'Invite+', 'group-public':'Group Public', 'group-plus':'Group+', 'group-members':'Group', 'group-unknown':'Group', unknown:'不明' };
+let data = { friends:[], events:[], worlds:[] }, config = { ...DEFAULTS }, state = {}, selectedAccount = '', dirty = false, renderTimer, loaded = false;
+const demo = isDemo ? demoData() : null;
+function node(tag, content, className) { const el = document.createElement(tag); if (content != null) el.textContent = content; if (className) el.className = className; return el; }
+function pill(label, cls = '') { return node('span', label, 'pill ' + cls); }
+function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(renderTimer); renderTimer = setTimeout(() => { $('toast').hidden = true; }, 6000); }
+async function send(message) {
+  if (isDemo) { toast('デモ画面では収集・設定変更は行いません。'); return false; }
+  try { const response = await chrome.runtime.sendMessage(message); if (!response?.ok) throw new Error(response?.error || '拡張を再読み込みしてください。'); return true; }
+  catch (e) { toast(e.message); return false; }
+}
+function tab(name) {
+  for (const b of document.querySelectorAll('[data-tab]')) { b.classList.toggle('selected', b.dataset.tab === name); b.setAttribute('aria-current', b.dataset.tab === name ? 'page' : 'false'); }
+  for (const id of ['friends','history','settings','help']) $(id + 'Panel').hidden = id !== name;
+}
+const worldName = id => data.worlds.find(w => w.id === id)?.name || id;
+function place(f) { const l = f?.location; return l?.kind === 'world' ? worldName(l.worldId) : ({ private:'所在非公開', offline:'オフライン', traveling:'移動中', web:'ワールド情報なし', unknown:'所在不明' }[l?.kind] || '不明'); }
+function stale(f) { return Date.now() - f.observedAt > Math.max(config.pollSeconds * 2.2, 120) * 1000; }
+function summary(f) { return f ? `${presenceNames[f.presence] || f.presence} · ${place(f)}${f.statusDescription ? ' · ' + f.statusDescription : ''}` : '記録なし'; }
+function shortId(s, n=24) { return s?.length > n ? s.slice(0,n) + '…' : s || '—'; }
+function render() {
+  const active = data.friends.filter(f => f.isFriend), fresh = active.filter(f => !stale(f));
+  $('total').textContent = active.length.toLocaleString();
+  $('online').textContent = fresh.filter(f => f.presence === 'online').length.toLocaleString();
+  $('visible').textContent = fresh.filter(f => f.location.kind === 'world').length.toLocaleString();
+  $('private').textContent = fresh.filter(f => f.location.kind === 'private').length.toLocaleString();
+  $('stale').textContent = active.filter(stale).length.toLocaleString();
+  const q = $('search').value.trim().toLocaleLowerCase(), filter = $('filter').value;
+  const rows = data.friends.filter(f => {
+    if (filter === 'removed' ? f.isFriend : !f.isFriend) return false;
+    if (filter === 'stale' && !stale(f)) return false;
+    if (filter === 'private' && f.location.kind !== 'private') return false;
+    if (['online','active','offline'].includes(filter) && f.presence !== filter) return false;
+    return !q || [f.displayName, f.id, place(f), f.statusDescription, f.location.instanceId].join(' ').toLocaleLowerCase().includes(q);
+  }).sort((a,b) => ({online:0,active:1,unknown:2,offline:3}[a.presence] ?? 2) - ({online:0,active:1,unknown:2,offline:3}[b.presence] ?? 2) || a.displayName.localeCompare(b.displayName,'ja'));
+  $('count').textContent = `${rows.length.toLocaleString()} 件`;
+  $('empty').hidden = !!data.friends.length;
+  const body = $('friendsBody'); body.replaceChildren();
+  // Keep large rosters responsive. Search/export still use every stored row.
+  for (const f of rows.slice(0,1000)) {
+    const tr = node('tr'); tr.tabIndex = 0; tr.setAttribute('aria-label', `${f.displayName}の詳細`);
+    tr.addEventListener('click', () => showDetail(f)); tr.addEventListener('keydown', e => { if(e.key === 'Enter') showDetail(f); });
+    const nameCell = node('td'), wrap = node('div', null, 'friend-name'), avatar = node('span', [...f.displayName][0], 'avatar'), names = node('div');
+    names.append(node('strong', f.displayName), node('span', f.platform || 'プラットフォーム未確認', 'sub')); wrap.append(avatar,names); nameCell.append(wrap);
+    const statusCell = node('td'); statusCell.append(pill(presenceNames[f.presence] || '不明', f.presence));
+    statusCell.append(node('span', f.status ? statusNames[f.status] || f.status : '', 'sub'));
+    const placeCell = node('td'); placeCell.append(node('span', place(f), 'world-name'), node('span', shortId(f.location.instanceId,38), 'sub'));
+    const typeCell = node('td'); typeCell.append(node('span', accessNames[f.location.access] || f.location.access || '—'), node('span', f.location.region?.toUpperCase() || '—', 'sub'));
+    const timeCell = node('td'); timeCell.append(node('span', date(f.observedAt))); if(stale(f)) timeCell.append(node('span','古い観測','sub'));
+    tr.append(nameCell,statusCell,placeCell,typeCell,timeCell); body.append(tr);
+  }
+  if (rows.length > 1000) { const tr=node('tr'),td=node('td','画面には先頭1,000件を表示しています。検索で絞り込むかCSVで全件を確認できます。');td.colSpan=5;tr.append(td);body.append(tr); }
+  if (!rows.length && data.friends.length) { const tr=node('tr'),td=node('td','条件に一致するフレンドはいません。');td.colSpan=5;tr.append(td);body.append(tr); }
+  renderHistory($('historyList'), data.events);
+  const phases = { running:'取得中', ready:'収集中', paused:'停止中', waiting:'待機中', attention:'要確認' };
+  $('phase').textContent = phases[state.phase] || '停止中'; $('phaseDot').className='status-dot ' + (state.phase || '');
+  $('message').textContent = state.message || '収集設定を保存して開始してください。';
+  $('nextRun').textContent = state.nextRunAt && config.enabled ? `次回 ${date(state.nextRunAt)}` : '';
+  $('lastSuccess').textContent = `最終保存 ${date(data.lastSuccessAt || (selectedAccount === state.accountId ? state.lastSuccessAt : null))}`;
+  $('start').textContent = config.enabled ? '収集を停止' : '収集を開始';
+  $('refresh').disabled = isDemo || !config.enabled || state.phase === 'running' || state.cooldownUntil > Date.now();
+  for(const id of ['exportCSV','exportJSON','exportEvents']) $(id).disabled = !selectedAccount;
+}
+function renderHistory(container, events) {
+  container.replaceChildren();
+  if (!events.length) { container.append(node('p','変更履歴はまだありません。','empty muted')); return; }
+  for(const e of events) {
+    const row=node('article',null,'history-row'),time=node('div',date(e.observedAt)),name=node('strong',e.displayName),change=node('div',null,'change');
+    time.append(node('span',e.previousObservedAt ? `前回 ${date(e.previousObservedAt)}` : '初回観測','sub'));
+    const label=e.kind==='first'?'初回記録':e.kind==='roster-removed'?'名簿から消失':'状態変更';
+    change.append(node('strong',label+' · '+summary(e.current)));
+    if(e.previous) change.append(node('span','前：'+summary(e.previous),'sub'));
+    row.append(time,name,change);container.append(row);
+  }
+}
+function showDetail(f) {
+  $('detailName').textContent=f.displayName;
+  const fields=$('detailFields');fields.replaceChildren();
+  const w=data.worlds.find(w=>w.id===f.location.worldId);
+  const values=[['ユーザーID',f.id],['観測日時',date(f.observedAt)+(stale(f)?'（古い観測）':'')],['名前・状態文の取得',date(f.profileObservedAt)],['接続状態',presenceNames[f.presence]],['ステータス',statusNames[f.status]||f.status||'—'],['メッセージ',f.statusDescription||'—'],['プラットフォーム',f.platform||'—'],['ワールド',place(f)],['ワールドID',f.location.worldId||'—'],['インスタンスID',f.location.instanceId||'—'],['種類',accessNames[f.location.access]||f.location.access||'—'],['地域',f.location.region||'—'],['ワールド作者',w?.authorName||'未取得'],['ワールド定員',w?.capacity??'未取得'],['定員の取得日時',date(w?.observedAt)],['初回観測',date(f.firstObservedAt)],['現在の状態の初回観測',date(f.stateFirstObservedAt)]];
+  for(const [k,v] of values)fields.append(node('dt',k),node('dd',v));
+  const links=node('dd'),label=node('dt','公式サイト');
+  const profile=node('a','プロフィールを開く ↗');profile.href='https://vrchat.com/home/user/'+encodeURIComponent(f.id);profile.target='_blank';profile.rel='noreferrer';links.append(profile);
+  if(f.location.worldId){const link=node('a','　ワールドを開く ↗');link.href='https://vrchat.com/home/world/'+encodeURIComponent(f.location.worldId);link.target='_blank';link.rel='noreferrer';links.append(link);}
+  fields.append(label,links);renderHistory($('detailHistory'),data.events.filter(e=>e.userId===f.id));$('detail').showModal();
+}
+let refreshQueue=Promise.resolve();
+function reload() { refreshQueue=refreshQueue.then(load).catch(e=>toast('表示データを読み取れません：'+e.message));return refreshQueue; }
+async function load() {
+  if(isDemo){ data=demo;state=demo.state;config={...DEFAULTS,enabled:true};selectedAccount=demo.accountId;
+    $('account').replaceChildren(new Option('デモアカウント',demo.accountId));$('demoFlag').hidden=false;
+  } else {
+    const saved=await chrome.storage.local.get(['settings','state','accountMeta']);config={...DEFAULTS,...saved.settings};state=saved.state||{};
+    const accounts=saved.accountMeta||{};
+    if(!selectedAccount || !accounts[selectedAccount])selectedAccount=state.accountId||Object.keys(accounts)[0]||'';
+    $('account').replaceChildren(...Object.entries(accounts).map(([id,meta])=>new Option(meta.displayName||id,id)));
+    if(!Object.keys(accounts).length)$('account').append(new Option('未取得',''));$('account').value=selectedAccount;
+    if(selectedAccount){const [friends,events,worlds]=await Promise.all([list('friends',selectedAccount),timeline('events',selectedAccount),list('worlds',selectedAccount)]);data={friends,events,worlds,lastSuccessAt:accounts[selectedAccount]?.lastSuccessAt};}
+    else data={friends:[],events:[],worlds:[]};
+  }
+  if(!dirty){for(const id of ['contact','pollSeconds','retentionDays','offlineRefreshMinutes'])$(id).value=String(config[id]);}
+  loaded=true;render();
+}
+function download(filename,content,type){const blob=new Blob([content],{type});const url=URL.createObjectURL(blob),a=node('a');a.href=url;a.download=filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);}
+const stamp=()=>new Date().toISOString().replace(/[:.]/g,'-');
+async function exportData(kind){
+  try{
+    const saved=isDemo?{schema:1,demo:true,exportedAt:new Date().toISOString(),...demo}:await exportAccount(selectedAccount);
+    const prefix=(isDemo?'DEMO-':'')+'vrc-friends-'+stamp();
+    if(kind==='json'){download(prefix+'.json',JSON.stringify({appVersion:VERSION,...saved},null,2),'application/json');return;}
+    if(kind==='friends'){
+      const names=new Map(saved.worlds.map(w=>[w.id,w.name]));
+      const rows=[['account_id','user_id','display_name','is_friend','presence','status','status_description','platform','location_visibility','world_id','world_name','instance_id','instance_type','region','observed_at_utc','profile_observed_at_utc','first_observed_at_utc','state_first_observed_at_utc']];
+      for(const f of saved.friends)rows.push([selectedAccount,f.id,f.displayName,f.isFriend,f.presence,f.status,f.statusDescription,f.platform,f.location.kind,f.location.worldId,names.get(f.location.worldId)||'',f.location.instanceId,f.location.access,f.location.region,iso(f.observedAt),iso(f.profileObservedAt),iso(f.firstObservedAt),iso(f.stateFirstObservedAt)]);
+      download(prefix+'.csv',csv(rows),'text/csv;charset=utf-8');
+    }else{
+      const rows=[['account_id','user_id','display_name','kind','observed_at_utc','previous_observed_at_utc','previous_presence','current_presence','previous_location_visibility','current_location_visibility','previous_world_id','current_world_id','previous_instance_id','current_instance_id','previous_status','current_status','previous_status_description','current_status_description']];
+      for(const e of saved.events)rows.push([selectedAccount,e.userId,e.displayName,e.kind,iso(e.observedAt),iso(e.previousObservedAt),e.previous?.presence,e.current?.presence,e.previous?.location?.kind,e.current?.location?.kind,e.previous?.location?.worldId,e.current?.location?.worldId,e.previous?.location?.instanceId,e.current?.location?.instanceId,e.previous?.status,e.current?.status,e.previous?.statusDescription,e.current?.statusDescription]);
+      download(prefix+'-events.csv',csv(rows),'text/csv;charset=utf-8');
+    }
+  }catch(e){toast('書き出しに失敗しました：'+e.message);}
+}
+document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>tab(b.dataset.tab)));
+$('emptySettings').addEventListener('click',()=>tab('settings'));
+$('search').addEventListener('input',render);$('filter').addEventListener('change',render);
+$('account').addEventListener('change',()=>{selectedAccount=$('account').value;void reload();});
+$('start').addEventListener('click',async()=>{if(await send({type:config.enabled?'PAUSE':'START'}))void reload();});
+$('refresh').addEventListener('click',async()=>{if(await send({type:'POLL'}))toast('更新を開始しました。');});
+$('settingsForm').addEventListener('input',()=>{dirty=true;$('settingsNotice').textContent='未保存';});
+$('settingsForm').addEventListener('submit',async e=>{e.preventDefault();const values={};for(const id of ['contact','pollSeconds','retentionDays','offlineRefreshMinutes'])values[id]=$(id).value;
+  if(Number(values.retentionDays)<config.retentionDays&&!confirm('保存期間を短くします。期間外の履歴が削除されます。続けますか？'))return;
+  if(await send({type:'SAVE',settings:values})){dirty=false;$('settingsNotice').textContent='保存しました';await reload();}});
+$('clear').addEventListener('click',async()=>{if(confirm('全アカウントの保存済み記録を削除し、収集を停止します。元には戻せません。実行しますか？')&&await send({type:'CLEAR'})){selectedAccount='';await reload();toast('全記録を削除しました。');}});
+$('closeDetail').addEventListener('click',()=>$('detail').close());
+$('exportCSV').addEventListener('click',()=>exportData('friends'));$('exportJSON').addEventListener('click',()=>exportData('json'));$('exportEvents').addEventListener('click',()=>exportData('events'));
+if(!isDemo){let timer;chrome.storage.onChanged.addListener(()=>{clearTimeout(timer);timer=setTimeout(()=>void reload(),200);});}
+setInterval(()=>{if(loaded)render();},30000);
+void reload();

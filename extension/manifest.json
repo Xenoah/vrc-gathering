@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "VRC Friends Observer",
+  "version": "0.1.0",
+  "description": "自分に公開されているVRChatフレンドの状態・ワールドをローカル記録します。",
+  "minimum_chrome_version": "120",
+  "permissions": ["alarms", "storage", "unlimitedStorage", "background", "declarativeNetRequestWithHostAccess"],
+  "host_permissions": ["https://vrchat.com/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_title": "VRC Friends Observerを開く" },
+  "options_page": "dashboard.html",
+  "incognito": "not_allowed",
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src https://vrchat.com; img-src 'self' data:; style-src 'self'; base-uri 'none'"
+  }
+}
