@@ -2,6 +2,7 @@ import { DEFAULTS, VERSION, settings, validContact, userAgentRule, currentUser, 
 import { list, commit, prune, clearAll, exportSyncRecords, mergeSyncRecords, enqueueImages, cachedImages, updateCachedImage, trimImageCache, clearImageCache } from './db.js';
 import { createImageCollector, imageCandidate, IMAGE_ORIGINS, IMAGE_CACHE_BYTES, IMAGE_CACHE_COUNT } from './image-cache.js';
 import { createSync, syncSettings, createAccountUpdater, CLOUD_ORIGINS, serverRetryDeadline } from './sync.js';
+import { resolveSettingsBackup } from './settings-backup.js';
 
 const updateAccounts = createAccountUpdater(chrome.storage.local);
 const cloud = createSync({ storage:chrome.storage.local, exportRecords:exportSyncRecords, mergeRecords:mergeSyncRecords, updateAccounts, hasPermission:()=>chrome.permissions.contains({origins:CLOUD_ORIGINS}) });
@@ -195,6 +196,32 @@ async function pause() {
   await chrome.action.setBadgeText({ text: '' });
 }
 async function command(message) {
+  if (message.type === 'IMPORT_SETTINGS') {
+    const current = await chrome.storage.local.get('cloudSync');
+    const imported = resolveSettingsBackup(message.backup, current.cloudSync);
+    const origins = [...(imported.cloudSync.enabled ? CLOUD_ORIGINS : []), ...(imported.imageCacheSettings.enabled ? IMAGE_ORIGINS : [])];
+    if (origins.length && !await chrome.permissions.contains({origins})) throw Error('設定の読み込みに必要な接続権限を許可してください。');
+    await cloud.pause();
+    try {
+      await pause();
+      if (imported.settings.contact) await ensureUA(imported.settings);
+      else await chrome.declarativeNetRequest.updateDynamicRules({removeRuleIds:[1,2],addRules:[]});
+      const saved = await chrome.storage.local.get(['cloudSync','cloudState']);
+      const old = saved.cloudSync || {}, next = imported.cloudSync;
+      const changed = next.endpoint !== old.endpoint || next.token !== old.token;
+      const sameEndpoint = next.endpoint === old.endpoint;
+      const serverRetryAt = sameEndpoint ? serverRetryDeadline(saved.cloudState) : 0;
+      await chrome.storage.local.set({settings:imported.settings,cloudSync:next,imageCacheSettings:imported.imageCacheSettings,
+        cloudState:{...(sameEndpoint ? saved.cloudState : {}),phase:next.enabled?'pending':'disabled',serverRetryAt,
+          retryAt:Math.max(serverRetryAt,sameEndpoint ? saved.cloudState?.retryAt || 0 : 0),message:next.enabled?'設定を読み込みました。同期は有効です。':'設定を読み込みました。同期は無効です。'},
+        ...(changed ? {cloudCheckpoint:{cursor:0,receipts:{}},cloudDiagnostic:{}} : {})});
+      if (next.enabled) await chrome.alarms.create(CLOUD_ALARM,{periodInMinutes:5});
+      else await chrome.alarms.clear(CLOUD_ALARM);
+      if (imported.imageCacheSettings.enabled) await chrome.alarms.create(IMAGE_ALARM,{periodInMinutes:5});
+      else await chrome.alarms.clear(IMAGE_ALARM);
+      return {ok:true,needsToken:imported.needsToken};
+    } finally { cloud.resume(); }
+  }
   if(message.type==='SAVE_IMAGES'){
     const enabled=message.enabled===true;
     if(enabled&&!await chrome.permissions.contains({origins:IMAGE_ORIGINS}))throw Error('画像取得の追加接続権限を許可してください。');

@@ -2,7 +2,7 @@
 <html lang="ja">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VRC Friends Observer</title><link rel="stylesheet" href="dashboard.css"><link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png"></head>
 <body>
-<header class="top"><div class="brand"><img class="brand-icon" src="icons/icon-128.png" width="48" height="48" alt=""><div><strong>VRC Friends Observer</strong><small>LOCAL FRIEND ACTIVITY · v0.3.1</small></div></div><div class="top-actions"><span id="demoFlag" class="pill" hidden>デモデータ</span><a href="https://vrchat.com/home" target="_blank" rel="noreferrer">VRChatを開く ↗</a></div></header>
+<header class="top"><div class="brand"><img class="brand-icon" src="icons/icon-128.png" width="48" height="48" alt=""><div><strong>VRC Friends Observer</strong><small>LOCAL FRIEND ACTIVITY · v0.3.2</small></div></div><div class="top-actions"><span id="demoFlag" class="pill" hidden>デモデータ</span><a href="https://vrchat.com/home" target="_blank" rel="noreferrer">VRChatを開く ↗</a></div></header>
 <main>
 <section class="hero"><div><div class="eyebrow">YOUR FRIENDS, AT A GLANCE</div><h1>フレンドの今を、記録に。</h1><p>自分に公開されている状態とワールドを、PC内に保存。</p></div><div class="hero-actions"><button id="start" class="primary">収集を開始</button><button id="refresh">今すぐ更新</button></div></section>
 <div class="statusbar" role="status" aria-live="polite"><span id="phaseDot" class="status-dot"></span><strong id="phase">停止中</strong><span id="message">設定を保存し、収集を開始してください。</span><span id="nextRun" class="push"></span></div>
@@ -37,6 +37,15 @@
 <section id="historyPanel" class="panel" hidden><div class="toolbar"><h2>状態が変わったときの記録</h2><span class="muted push">直近200件 / 取得時点の差分</span><button id="exportEvents">履歴CSV</button></div><div id="historyList"></div><p class="footnote">時刻は観測時刻です。前回観測から今回観測までのどこかで変わった可能性があり、正確な移動時刻・滞在時間ではありません。</p></section>
 <section id="settingsPanel" class="panel padded" hidden>
   <div class="section-heading"><span class="eyebrow">COLLECTION SETTINGS</span><h2>収集と保存</h2><p>公式サイトのログイン状態を利用します。初回は停止状態です。</p></div>
+  <section class="settings-backup" aria-labelledby="backupHeading">
+    <h3 id="backupHeading">設定のバックアップ</h3>
+    <p class="muted">保存済みの収集・Google同期・画像キャッシュの設定をJSONで保存し、別の端末でも読み込めます。記録や画像、GAS側の設定は含みません。</p>
+    <label class="check-label"><input id="includeSyncToken" type="checkbox">同期キーも含める（キーは暗号化されずに保存されます）</label>
+    <p class="muted">キーを含むファイルは、ご自身で管理してください。キーなしで読み込む場合、同じGASのURLに限り端末内の保存済みキーを維持します。</p>
+    <div class="backup-actions"><button id="exportSettings" type="button">設定を書き出し</button><button id="importSettings" type="button">設定を読み込み</button></div>
+    <input id="settingsFile" type="file" accept=".json,application/json" hidden>
+    <p id="backupNotice" role="status"></p>
+  </section>
   <form id="settingsForm"><div class="form-grid"><label>API利用者の連絡先<input id="contact" type="text" maxlength="180" placeholder="https://github.com/あなたのID" required><small>自分のメールアドレスまたはHTTPSプロフィールURL。API識別用のUser-Agentに含めます。</small></label><label>更新間隔<select id="pollSeconds"><option value="60">1分</option><option value="180">3分（推奨）</option><option value="300">5分</option><option value="600">10分</option><option value="1800">30分</option><option value="3600">60分</option></select><small>前後10%のランダム幅。API呼び出しは2.2秒以上空けて直列実行します。</small></label><label>保存日数<select id="retentionDays"><option value="7">7日</option><option value="30">30日</option><option value="90">90日</option><option value="180">180日</option><option value="365">365日</option></select><small>期間を過ぎた履歴・未更新データを自動削除。短縮すると対象データが削除されます。</small></label><label>オフライン名簿の再取得<select id="offlineRefreshMinutes"><option value="30">30分</option><option value="60">60分（推奨）</option><option value="180">3時間</option><option value="1440">24時間</option></select><small>オフラインへの変化は通常巡回の名簿でも確認します。これは名前などの再取得間隔です。</small></label></div><button type="submit" class="primary">設定を保存</button><span id="settingsNotice" role="status"></span></form>
   <section class="image-settings" aria-labelledby="imageHeading"><h3 id="imageHeading">ユーザー・ワールドの画像キャッシュ</h3>
     <p class="muted">収集時に公開されたアイコン・サムネイルを端末に保存します。一覧や図では保存済み画像を使い、GAS・CSV・JSONには画像や画像URLを含めません。</p>
@@ -93,7 +102,7 @@
 </section>
 <section id="helpPanel" class="panel padded" hidden>
   <div class="section-heading"><span class="eyebrow">QUICK START</span><h2>Windowsで継続して使う</h2></div>
-  <ol class="steps"><li><strong>同じChromeプロファイルでログイン</strong><p><a href="https://vrchat.com/home/login" target="_blank" rel="noreferrer">vrchat.com</a>のログインと2段階認証を完了。パスワード・認証トークンをこの拡張に入力する必要はありません。</p></li><li><strong>連絡先を保存して収集を開始</strong><p>収集設定にAPI識別用の連絡先を入力。拡張のアイコンから、いつでもこの画面を開けます。</p></li><li><strong>Chromeのバックグラウンド実行を有効に</strong><p>Chrome「設定 → システム → Google Chromeを閉じた際にバックグラウンドアプリの処理を続行する」を有効にします。Windowsログオン時の起動は同梱のwindows/Install-Startup.ps1でも設定できます。</p></li><li><strong>履歴は定期的にエクスポート</strong><p>拡張の削除・プロファイル消去で記録も消えます。JSONは全履歴の保存用、CSVは一覧・差分の分析用です。JSONファイルの手動再インポートは未対応です。GAS同期では別端末の記録を取り込めます。</p></li></ol>
+  <ol class="steps"><li><strong>同じChromeプロファイルでログイン</strong><p><a href="https://vrchat.com/home/login" target="_blank" rel="noreferrer">vrchat.com</a>のログインと2段階認証を完了。パスワード・認証トークンをこの拡張に入力する必要はありません。</p></li><li><strong>連絡先を保存して収集を開始</strong><p>収集設定にAPI識別用の連絡先を入力。拡張のアイコンから、いつでもこの画面を開けます。</p></li><li><strong>Chromeのバックグラウンド実行を有効に</strong><p>Chrome「設定 → システム → Google Chromeを閉じた際にバックグラウンドアプリの処理を続行する」を有効にします。Windowsログオン時の起動は同梱のwindows/Install-Startup.ps1でも設定できます。</p></li><li><strong>履歴は定期的にエクスポート</strong><p>拡張の削除・プロファイル消去で記録も消えます。JSONは全履歴の保存用、CSVは一覧・差分の分析用です。全履歴JSONの手動再インポートは未対応です。設定のJSONは「収集設定 → 設定のバックアップ」で書き出し・読み込みできます。GAS同期では別端末の記録を取り込めます。</p></li></ol>
   <div class="setup-callout"><div><h3>Googleスプレッドシートと同期する</h3><p>GASの作成・公開・接続設定を、拡張内のガイドで進められます。必要なコードも同梱しています。</p></div><button type="button" data-open-gas-setup>GASセットアップ手順を見る</button></div>
   <div class="help-grid"><article><h3>収集が止まる条件</h3><p>Chromeの完全終了、Windowsのサインアウト／スリープ、ネット切断、認証切れ、サイト権限の未許可。Windowsのログオン前には動きません。</p></article><article><h3>公開範囲をそのまま扱う</h3><p>APIが所在を非公開にしている場合は「非公開」。非公開の居場所の推測、非フレンドの追跡、同席者一覧の収集は行いません。</p></article><article><h3>大量のフレンドがいる場合</h3><p>1巡回でオンライン最大2,000件、オフライン名簿最大500件を取得し、続きは次回へ。ワールド名は最大5件ずつ補完します。ページ取得中の状態変化で重複や抜けが生じる場合があり、IDで重複排除します。</p></article><article><h3>エラー時の動作</h3><p>401／403は停止。429／通信失敗は待機し、Retry-Afterと指数バックオフを適用。停止・再開やデータ削除をしても待機時間は解除しません。</p></article></div>
   <p class="footnote">個人用の非公式ツールです。API変更に追従が必要になる場合があります。User-AgentはChromeの識別子にアプリ名・版・連絡先を付加します。<a href="https://hello.vrchat.com/creator-guidelines" target="_blank" rel="noreferrer">VRChat Creator Guidelines</a> / <a href="https://vrchat.community/reference/get-friends" target="_blank" rel="noreferrer">コミュニティAPI資料</a></p><a href="dashboard.html?demo=1" target="_blank">架空データで画面を見る ↗</a>
@@ -101,6 +110,14 @@
 <footer>VRC Friends Observer · 個人用 / 非公式 · ローカル保存 / 任意でSheets同期</footer>
 </main>
 <dialog id="detail"><div class="detail-top"><h2 id="detailName"></h2><button id="closeDetail" aria-label="詳細を閉じる">閉じる ×</button></div><dl id="detailFields"></dl><h3>このフレンドの直近の変更</h3><p class="muted">表示中アカウントの直近200件から抽出</p><div id="detailHistory"></div></dialog>
+<dialog id="settingsImportDialog" aria-labelledby="settingsImportHeading">
+  <h2 id="settingsImportHeading">読み込む設定の確認</h2>
+  <p>現在の設定と未保存の入力を置き換えます。収集は停止した状態で保存します。</p>
+  <dl id="settingsImportFields"></dl>
+  <p class="muted">保存済みの記録・画像は残ります。保存日数を短くすると、今後の自動整理で期間外の記録が削除されます。Google同期・画像取得を有効にする場合は接続権限を確認します。</p>
+  <p id="settingsImportError" role="status"></p>
+  <div class="backup-actions"><button id="cancelSettingsImport" type="button">キャンセル</button><button id="confirmSettingsImport" type="button" class="primary">この設定を読み込んで保存</button></div>
+</dialog>
 <div id="toast" class="toast" role="alert" hidden></div>
 <script type="module" src="dashboard.js"></script>
 </body></html>

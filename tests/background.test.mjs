@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import fs from 'node:fs/promises';
+import { createSettingsBackup } from '../extension/settings-backup.js';
 const root=new URL('../extension/',import.meta.url);
 const uid='usr_01234567-1111-2222-3333-012345678901',fid='usr_11111111-1111-2222-3333-012345678901',wid='wrld_01234567-1111-2222-3333-012345678901';
 const owner={id:uid,displayName:'テスト本人',friends:[fid],onlineFriends:[fid],offlineFriends:[],activeFriends:[],authToken:'SECRET_AUTH',email:'SECRET_MAIL'};
@@ -32,8 +33,9 @@ async function harness(handler, allowCloud = true){
   const format=new vm.SourceTextModule(await fs.readFile(new URL('sync-format.js',root),'utf8'),{context});await format.link(()=>{});
   const sync=new vm.SourceTextModule(await fs.readFile(new URL('sync.js',root),'utf8'),{context});await sync.link(()=>format);
   const images=new vm.SourceTextModule(await fs.readFile(new URL('image-cache.js',root),'utf8'),{context});await images.link(()=>{});
+  const backup=new vm.SourceTextModule(await fs.readFile(new URL('settings-backup.js',root),'utf8'),{context});await backup.link(spec=>spec==='./core.js'?core:sync);
   const bg=new vm.SourceTextModule(await fs.readFile(new URL('background.js',root),'utf8'),{context});
-  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:db);await bg.evaluate();
+  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:db);await bg.evaluate();
   async function flush(){for(let i=0;i<15;i++)await new Promise(setImmediate);}
   await flush();
   const command=message=>new Promise(resolve=>events.message(message,{id:'testextension',url:'chrome-extension://testextension/dashboard.html'},resolve));
@@ -125,4 +127,36 @@ test('manual sync, diagnostics, saving the key and local clearing cannot shorten
 test('a connection test with missing Google permission does not call fetch',async()=>{
   const h=await harness(good,false);await h.command({type:'SAVE_SYNC',settings:{enabled:false,endpoint:'https://script.google.com/macros/s/test/exec',token:'test_token_0123456789_abcdefghijklmnopqrstuvwxyz'}});
   const response=await h.command({type:'TEST_SYNC'});assert.equal(response.diagnostic.responseCode,'PERMISSION');assert.equal(h.calls.length,0);h.stop();
+});
+
+test('settings import pauses collection, preserves observations and cooldowns, and restores all preferences',async()=>{
+  const h=await harness(good);await h.start();const records=JSON.stringify(h.saved.friends), count=h.calls.length;
+  const endpoint='https://script.google.com/macros/s/test/exec',token='backup_test_key_0123456789_abcdefghijklmnopqrstuvwxyz';
+  h.store.cloudSync={enabled:true,endpoint,token};h.store.cloudState={serverRetryAt:Date.now()+86400000,retryAt:Date.now()+86400000};
+  h.store.cloudCheckpoint={cursor:71,receipts:{retained:1}};h.store.state.cooldownUntil=Date.now()+86400000;
+  const deadline=h.store.cloudState.serverRetryAt,cooldown=h.store.state.cooldownUntil;
+  const backup=createSettingsBackup({settings:{contact:'https://github.com/restored',pollSeconds:600,retentionDays:7,offlineRefreshMinutes:180},cloudSync:h.store.cloudSync,imageCacheSettings:{enabled:true}});
+  const result=await h.command({type:'IMPORT_SETTINGS',backup});await h.flush();
+  assert.equal(result.ok,true);assert.equal(h.store.settings.enabled,false);assert.equal(h.store.settings.contact,'https://github.com/restored');assert.equal(h.store.settings.pollSeconds,600);
+  assert.equal(h.store.cloudSync.token,token);assert.equal(h.store.cloudSync.enabled,true);assert.equal(h.store.imageCacheSettings.enabled,true);
+  assert.equal(h.store.cloudCheckpoint.cursor,71);assert.equal(h.store.cloudState.serverRetryAt,deadline);assert.equal(h.store.state.cooldownUntil,cooldown);
+  assert.equal(JSON.stringify(h.saved.friends),records);assert.equal(h.calls.length,count);assert.ok(!h.alarms.has('vrc-observer-next'));
+  assert.ok(h.alarms.has('vrc-observer-cloud'));assert.ok(h.alarms.has('vrc-observer-images'));h.stop();
+});
+test('invalid imports and denied permissions change no settings or records',async()=>{
+  const h=await harness(good,false);await h.start();const before=JSON.stringify(h.store),records=JSON.stringify(h.saved.friends);
+  const invalid=createSettingsBackup({});invalid.settings.collection.retentionDays=0;
+  assert.equal((await h.command({type:'IMPORT_SETTINGS',backup:invalid})).ok,false);
+  const denied=createSettingsBackup({imageCacheSettings:{enabled:true}});
+  assert.equal((await h.command({type:'IMPORT_SETTINGS',backup:denied})).ok,false);
+  assert.equal(JSON.stringify(h.store),before);assert.equal(JSON.stringify(h.saved.friends),records);h.stop();
+});
+test('importing another endpoint without a key disables sync and resets only its checkpoint',async()=>{
+  const h=await harness(good);
+  h.store.cloudSync={enabled:true,endpoint:'https://script.google.com/macros/s/old/exec',token:'old_test_key_0123456789_abcdefghijklmnopqrstuvwxyz'};
+  h.store.cloudCheckpoint={cursor:99,receipts:{old:1}};
+  const backup=createSettingsBackup({cloudSync:{enabled:true,endpoint:'https://script.google.com/macros/s/new/exec'}});
+  const response=await h.command({type:'IMPORT_SETTINGS',backup});
+  assert.equal(response.ok,true);assert.equal(response.needsToken,true);assert.equal(h.store.cloudSync.token,'');assert.equal(h.store.cloudSync.enabled,false);
+  assert.equal(h.store.cloudCheckpoint.cursor,0);assert.ok(!h.alarms.has('vrc-observer-cloud'));assert.equal(h.calls.length,0);h.stop();
 });

@@ -6,6 +6,7 @@ import { createNetworkView } from './network-view.js';
 import { CLOUD_ORIGINS, serverRetryDeadline } from './sync.js';
 import { IMAGE_ORIGINS } from './image-cache.js';
 import { initializeGasGuide } from './setup-guide.js';
+import { initializeSettingsBackup } from './settings-backup-ui.js';
 
 const $ = id => document.getElementById(id), isDemo = new URLSearchParams(location.search).get('demo') === '1';
 const dateFormat = new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
@@ -32,10 +33,10 @@ async function loadImages() {
 }
 function pill(label, cls = '') { return node('span', label, 'pill ' + cls); }
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(renderTimer); renderTimer = setTimeout(() => { $('toast').hidden = true; }, 6000); }
-async function call(message) {
+async function call(message,{rethrow=false}={}) {
   if(isDemo){toast('デモ画面では収集・設定変更は行いません。');return null;}
   try {const response=await chrome.runtime.sendMessage(message);if(!response?.ok)throw Error(response?.error || '拡張を再読み込みしてください。');return response;}
-  catch(error){toast(error.message);return null;}
+  catch(error){if(rethrow)throw error;toast(error.message);return null;}
 }
 async function send(message){return !!await call(message);}
 function showSyncSkip(response) {
@@ -235,7 +236,14 @@ async function load() {
   await loadImages();
   if(!imageDirty)$('imageEnabled').checked=imageConfig.enabled===true;
   $('imageStatus').textContent=`表示中のアカウント：${imageRows.filter(r=>r.blob).length}枚 · ${(imageRows.reduce((n,r)=>n+(r.bytes||0),0)/1048576).toFixed(1)}MiB · 未取得 ${imageRows.filter(r=>!r.blob||r.cachedUrl!==r.url).length}件`;
-  if(!dirty){for(const id of ['contact','pollSeconds','retentionDays','offlineRefreshMinutes'])$(id).value=String(config[id]);}
+  if(!dirty){for(const id of ['contact','pollSeconds','retentionDays','offlineRefreshMinutes']){
+    const field=$(id),value=String(config[id]);
+    if(field.tagName==='SELECT'){
+      field.querySelectorAll('[data-custom]').forEach(option=>option.remove());
+      if(![...field.options].some(option=>option.value===value)){const option=new Option(value+({pollSeconds:'秒',retentionDays:'日',offlineRefreshMinutes:'分'}[id]),value);option.dataset.custom='true';field.add(option);}
+    }
+    field.value=value;
+  }}
   if(!syncDirty){$('syncEnabled').checked=cloudConfig.enabled===true;$('syncEndpoint').value=cloudConfig.endpoint||'';}
   loaded=true;render();
 }
@@ -293,6 +301,11 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)void syncV
 window.addEventListener('focus',()=>void syncView());
 
 initializeGasGuide({showSettings:()=>tab('settings'),notify:toast});
+initializeSettingsBackup({isDemo,download,stamp,call,onImported:async()=>{
+  dirty=false;syncDirty=false;imageDirty=false;$('syncToken').value='';
+  for(const id of ['settingsNotice','syncNotice','imageNotice'])$(id).textContent='';
+  await reload();
+}});
 
 $('networkSort').addEventListener('change',renderJourney);$('networkSearch').addEventListener('input',renderJourney);
 $('zoomIn').addEventListener('click',()=>network.zoomBy(1.4));$('zoomOut').addEventListener('click',()=>network.zoomBy(1/1.4));
