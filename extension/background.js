@@ -1,10 +1,10 @@
 import { DEFAULTS, VERSION, settings, validContact, userAgentRule, currentUser, friend, rosterObservations, reconcile, retryDelay, jitter, world, WORLD_ID } from './core.js';
 import { list, commit, prune, clearAll, exportSyncRecords, mergeSyncRecords, enqueueImages, cachedImages, updateCachedImage, trimImageCache, clearImageCache } from './db.js';
 import { createImageCollector, imageCandidate, IMAGE_ORIGINS, IMAGE_CACHE_BYTES, IMAGE_CACHE_COUNT } from './image-cache.js';
-import { createSync, syncSettings, createAccountUpdater } from './sync.js';
+import { createSync, syncSettings, createAccountUpdater, CLOUD_ORIGINS, serverRetryDeadline } from './sync.js';
 
 const updateAccounts = createAccountUpdater(chrome.storage.local);
-const cloud = createSync({ storage:chrome.storage.local, exportRecords:exportSyncRecords, mergeRecords:mergeSyncRecords, updateAccounts });
+const cloud = createSync({ storage:chrome.storage.local, exportRecords:exportSyncRecords, mergeRecords:mergeSyncRecords, updateAccounts, hasPermission:()=>chrome.permissions.contains({origins:CLOUD_ORIGINS}) });
 const CLOUD_ALARM = 'vrc-observer-cloud';
 const syncQuietly = () => cloud.sync().catch(() => {});
 
@@ -208,19 +208,23 @@ async function command(message) {
     try{await clearImageCache();await chrome.storage.local.set({imageCacheState:{count:0,bytes:0,pending:0}});return {ok:true};}
     finally{imageCollector.resume();}
   }
+  if (message.type === 'TEST_SYNC') { return {ok:true,...await cloud.testConnection()}; }
   if (message.type === 'SYNC') { return {ok:true, ...await cloud.sync({force:message.force === true})}; }
   if (message.type === 'SAVE_SYNC') {
     await cloud.pause();
+    let syncAfterSave=false;
     try {
-      const old = (await chrome.storage.local.get('cloudSync')).cloudSync || {};
+      const saved=await chrome.storage.local.get(['cloudSync','cloudState']),old=saved.cloudSync || {};
       const config = syncSettings({...message.settings, token:message.settings?.token || old.token || ''});
-      if (config.enabled && !await chrome.permissions.contains({origins:['https://script.google.com/*','https://script.googleusercontent.com/*']})) throw new Error('Googleへの同期権限を許可してください。');
+      if (config.enabled && !await chrome.permissions.contains({origins:CLOUD_ORIGINS})) throw new Error('Googleへの同期権限を許可してください。');
       const changed = config.endpoint !== old.endpoint || config.token !== old.token;
-      await chrome.storage.local.set({cloudSync:config, cloudState:{phase:config.enabled?'pending':'disabled',message:config.enabled?'同期設定を保存しました。':'同期は無効です。'}, ...(changed ? {cloudCheckpoint:{cursor:0,receipts:{}}} : {})});
+      const serverRetryAt=config.endpoint===old.endpoint?serverRetryDeadline(saved.cloudState):0;
+      await chrome.storage.local.set({cloudSync:config,cloudState:{phase:config.enabled?'pending':'disabled',serverRetryAt,retryAt:serverRetryAt> Date.now()?serverRetryAt:0,message:config.enabled?'同期設定を保存しました。':'同期は無効です。'},...(changed?{cloudCheckpoint:{cursor:0,receipts:{}},cloudDiagnostic:{phase:'idle',message:'設定を変更しました。保存済みの設定で接続テストを実行してください。'}}:{})});
+      syncAfterSave=config.enabled;
       if (config.enabled) await chrome.alarms.create(CLOUD_ALARM,{periodInMinutes:5});
       else await chrome.alarms.clear(CLOUD_ALARM);
       return {ok:true};
-    } finally { cloud.resume(); void syncQuietly(); }
+    } finally { cloud.resume(); if(syncAfterSave)void syncQuietly(); }
   }
   if (message.type === 'SAVE') {
     const previous = await configuration(), next = settings({ ...previous, ...message.settings, enabled: previous.enabled });
@@ -251,8 +255,8 @@ async function command(message) {
     await pause();
     await cloud.pause();
     try {
-      const cloudConfig = (await chrome.storage.local.get('cloudSync')).cloudSync || {};
-      await chrome.storage.local.set({cloudSync:{...cloudConfig,enabled:false},cloudState:{phase:'disabled',message:'ローカル記録の削除に伴い同期を停止しました。'},cloudCheckpoint:{cursor:0,receipts:{}}});
+      const cloudSaved=await chrome.storage.local.get(['cloudSync','cloudState']),cloudConfig=cloudSaved.cloudSync || {},serverRetryAt=serverRetryDeadline(cloudSaved.cloudState);
+      await chrome.storage.local.set({cloudSync:{...cloudConfig,enabled:false},cloudState:{phase:'disabled',serverRetryAt,retryAt:serverRetryAt,message:'ローカル記録の削除に伴い同期を停止しました。'},cloudDiagnostic:{},cloudCheckpoint:{cursor:0,receipts:{}}});
       await chrome.alarms.clear(CLOUD_ALARM);
       await clearAll();
       await chrome.storage.local.set({imageCacheSettings:{enabled:false},imageCacheState:{count:0,bytes:0,pending:0}});
@@ -269,7 +273,7 @@ async function command(message) {
 let commandQueue = Promise.resolve();
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL(''))) return false;
-  if (message.type === 'SYNC') {
+  if (message.type === 'SYNC' || message.type === 'TEST_SYNC') {
     command(message).then(respond, error => respond({ok:false,error:error.message}));
     return true;
   }

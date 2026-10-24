@@ -2,7 +2,7 @@
 <html lang="ja">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VRC Friends Observer</title><link rel="stylesheet" href="dashboard.css"><link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png"></head>
 <body>
-<header class="top"><div class="brand"><img class="brand-icon" src="icons/icon-128.png" width="48" height="48" alt=""><div><strong>VRC Friends Observer</strong><small>LOCAL FRIEND ACTIVITY · v0.3.0</small></div></div><div class="top-actions"><span id="demoFlag" class="pill" hidden>デモデータ</span><a href="https://vrchat.com/home" target="_blank" rel="noreferrer">VRChatを開く ↗</a></div></header>
+<header class="top"><div class="brand"><img class="brand-icon" src="icons/icon-128.png" width="48" height="48" alt=""><div><strong>VRC Friends Observer</strong><small>LOCAL FRIEND ACTIVITY · v0.3.1</small></div></div><div class="top-actions"><span id="demoFlag" class="pill" hidden>デモデータ</span><a href="https://vrchat.com/home" target="_blank" rel="noreferrer">VRChatを開く ↗</a></div></header>
 <main>
 <section class="hero"><div><div class="eyebrow">YOUR FRIENDS, AT A GLANCE</div><h1>フレンドの今を、記録に。</h1><p>自分に公開されている状態とワールドを、PC内に保存。</p></div><div class="hero-actions"><button id="start" class="primary">収集を開始</button><button id="refresh">今すぐ更新</button></div></section>
 <div class="statusbar" role="status" aria-live="polite"><span id="phaseDot" class="status-dot"></span><strong id="phase">停止中</strong><span id="message">設定を保存し、収集を開始してください。</span><span id="nextRun" class="push"></span></div>
@@ -52,6 +52,13 @@
       <div class="form-grid"><label>GASのウェブアプリURL<input id="syncEndpoint" type="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label><label>同期キー<input id="syncToken" type="password" placeholder="32文字以上。保存済みの場合は空欄で維持" autocomplete="new-password"><small>GASのSYNC_TOKENと同じ値。VRChatの認証情報は入力しません。</small></label></div>
       <button type="submit" class="primary">同期設定を保存</button><span id="syncNotice" role="status"></span>
     </form>
+    <section class="sync-diagnostics" aria-labelledby="syncDiagnosticsHeading"><h4 id="syncDiagnosticsHeading">接続状態・診断</h4>
+      <p id="syncSavedState"></p><p id="syncPermissionStatus" role="status"></p><button type="button" id="grantSyncPermissions">Googleへの接続を許可</button>
+      <dl><dt>同期の段階</dt><dd id="syncProgress">未確認</dd><dt>最終同期試行</dt><dd id="syncLastAttempt">未確認</dd><dt>最終同期エラー</dt><dd id="syncLastError">なし</dd><dt>次回再試行</dt><dd id="syncRetryAt">待機なし</dd></dl>
+      <button type="button" id="testSync">接続テスト</button><p id="syncTestMessage" role="status"></p>
+      <dl><dt>最終接続テスト</dt><dd id="syncTestAt">未確認</dd><dt>HTTPステータス</dt><dd id="syncTestHTTP">応答なし</dd><dt>最終URL（クエリ除外）</dt><dd id="syncTestURL">未取得</dd><dt>応答コード</dt><dd id="syncTestCode">未取得</dd></dl>
+      <p class="muted">接続テストは保存済み設定を使います。URL・キーを変更したら先に保存してください。通常の再試行待ちは「接続テスト」「今すぐ同期」で再試行できます。サーバー指定のRetry-Afterがある場合は、その期限まで待機します。</p>
+    </section>
     <p class="muted">収集後・画面表示時・約5分ごとに同期します。通信失敗時は端末の記録を表示し、再試行します。別端末でも同じURLと同期キーを設定できます。</p>
     <details id="gasSetupGuide" class="setup-guide">
       <summary>はじめてのGASセットアップ</summary>
@@ -66,16 +73,16 @@
             </div>
             <p class="muted">コードは拡張に同梱しています。コピーできない場合は「ファイルを保存」で取得し、テキストエディターから貼り付けてください。</p>
           </li>
-          <li><h4>3つのスクリプトプロパティを設定</h4><p>Apps Scriptの「プロジェクトの設定 → スクリプトプロパティ」で追加します。</p>
-            <dl class="setup-properties"><dt><code>SPREADSHEET_ID</code></dt><dd>手順1で控えたスプレッドシートID。</dd><dt><code>SYNC_TOKEN</code></dt><dd>パスワードマネージャー等で生成したランダムな32〜256文字の英数字・ハイフン・アンダースコア。後で拡張にも同じ値を設定します。</dd><dt><code>RETENTION_DAYS</code></dt><dd>クラウドの保存日数。1〜365。未設定の場合は30日です。</dd></dl>
+          <li><h4>プロパティを設定し、同期キーを生成</h4><p>Apps Scriptの「プロジェクトの設定 → スクリプトプロパティ」でIDと保存日数を設定します。エディターで <code>createSyncToken</code> を選んで実行すると、64文字の同期キーが自動生成・保存されます。</p>
+            <dl class="setup-properties"><dt><code>SPREADSHEET_ID</code></dt><dd>手順1で控えたスプレッドシートID。</dd><dt><code>SYNC_TOKEN</code></dt><dd><code>createSyncToken</code> が自動保存します。実行後、スクリプトプロパティから値をコピーして拡張の同期キー欄に設定します。ログには値を出しません。有効な既存キーは上書きしません。手動設定は32〜256文字の英数字・ハイフン・アンダースコアです。</dd><dt><code>RETENTION_DAYS</code></dt><dd>クラウドの保存日数。1〜365。未設定の場合は30日です。</dd></dl>
             <p>同期キーを知る人は保存した全アカウントの記録を読み書きできます。キーは他人に共有せず、VRChatのパスワードや認証トークンは入力しないでください。</p>
           </li>
           <li><h4>setupを一度実行</h4><p>エディター上部で <code>setup</code> 関数を選んで実行し、Googleのアクセス許可を確認します。<code>VRCFriends</code>・<code>VRCEvents</code>・<code>VRCWorlds</code>・<code>VRCRuns</code>・<code>VRCAccounts</code> と、形式情報を持つ <code>VRCSchema</code>、日次整理トリガーを作成します。</p></li>
-          <li><h4>ウェブアプリとしてデプロイ</h4><p>「デプロイ → 新しいデプロイ → ウェブアプリ」で、「次のユーザーとして実行」は <strong>自分</strong>、「アクセスできるユーザー」は <strong>全員</strong> を選びます。GAS側で同期キーを照合するため、スプレッドシート自体の公開は不要です。</p><p>デプロイ後、末尾が <code>/exec</code> のURLをコピーします。<code>/dev</code> は使いません。組織の設定で「全員」を選べない場合は、管理者が認める公開方法を確認してください。</p></li>
-          <li><h4>この拡張にURLと同期キーを登録</h4><p>同期設定にGASのURLと <code>SYNC_TOKEN</code> と同じキーを入力し、「記録をGoogleスプレッドシートと同期する」をオンにして保存します。Googleへの追加接続権限を許可し、上部に「同期完了」が表示されることを確認してください。</p><p>別端末でも同じURLとキーを登録できます。閲覧だけならVRChatへのログインや収集開始は不要です。</p><button type="button" id="backToSyncSettings" class="primary">同期設定へ戻る</button></li>
+          <li><h4>ウェブアプリとしてデプロイ</h4><p>「デプロイ → 新しいデプロイ → ウェブアプリ」で、「次のユーザーとして実行」は <strong>自分</strong>、「アクセスできるユーザー」は <strong>全員</strong> を選びます。「自分のみ」のままだと拡張からの要求はログイン画面へ転送され、doPostは実行されません。GAS側で同期キーを照合するため、スプレッドシート自体の公開は不要です。</p><p>デプロイ後、末尾が <code>/exec</code> のURLをコピーします。<code>/dev</code> は使いません。組織の設定で「全員」を選べない場合は、管理者が認める公開方法を確認してください。</p></li>
+          <li><h4>この拡張にURLと同期キーを登録</h4><p>同期設定にGASのURLと <code>SYNC_TOKEN</code> と同じキーを入力し、「記録をGoogleスプレッドシートと同期する」をオンにして保存します。Googleへの追加接続権限を許可します。「接続状態・診断」で両ドメインが許可済みであることを確認し、「接続テスト」→「今すぐ同期」を実行します。GASの「実行数」にウェブアプリの <code>doPost</code> が記録され、シートに行が追加されることを確認してください。</p><p>別端末でも同じURLとキーを登録できます。閲覧だけならVRChatへのログインや収集開始は不要です。</p><button type="button" id="backToSyncSettings" class="primary">同期設定へ戻る</button></li>
         </ol>
         <div class="info"><strong>v0.2.xのGASから更新する場合</strong><p>Code.gsとProtocol.gsの両方を置き換え、同じスプレッドシートID・同期キーで <code>setup</code> を実行してから「デプロイを管理 → 編集 → 新バージョン」で公開します。旧 <code>VRCRecords</code> を種類別シートへ自動移行し、端末の既存記録も引き継ぎます。旧シートはバックアップとして残り、自動整理の対象外です。移行と同期を確認後、不要なら旧シートを手動で削除してください。</p><p><code>VRCSchema</code> と更新番号・JSON列は編集しないでください。新しい拡張は旧GASにも互換モードで接続できます。画像キャッシュは同期しません。</p></div><details class="setup-troubleshooting"><summary>うまく同期できないとき・GASを更新するとき</summary>
-          <dl><dt>同期キーが一致しません</dt><dd>GASの <code>SYNC_TOKEN</code> と、拡張に入力したキーを確認します。保存済みのキーは、入力欄を空欄のまま保存すると維持されます。</dd><dt>GASがJSONを返しません</dt><dd>URLが <code>/exec</code> であることと、公開範囲が「全員」であることを確認します。URLをブラウザで開いたときの <code>POST_REQUIRED</code> は正常です。</dd><dt>コードを更新したのに反映されません</dt><dd>Apps Scriptの「デプロイを管理 → 編集 → 新バージョン」で既存のデプロイを更新します。コードの保存だけでは公開済みの内容は更新されません。</dd><dt>GASの実行設定を確認したい</dt><dd>V8ランタイムを使います。必要なら「appsscript.json マニフェスト ファイルをエディタで表示する」を有効にし、<a href="setup/appsscript.json" download="appsscript.json">同梱のappsscript.jsonを保存</a>して参考にしてください。</dd></dl>
+          <dl><dt>Error: CONFIG／setupが失敗します</dt><dd>最新の2ファイルを貼り付け、エディターから <code>setup</code> を実行すると、不正なプロパティ名と条件を日本語で表示します。SYNC_TOKENが未設定・短い場合は <code>createSyncToken</code> を実行し、生成された値を拡張にも保存してください。</dd><dt>GASの実行数にdoPostがありません</dt><dd>「接続状態・診断」で権限、最終試行、待機期限を確認します。URL・キーを保存して「接続テスト」を実行してください。PUBLIC_ACCESSなら公開範囲を「全員」にして新バージョンで再デプロイします。NETWORKなら接続権限・ネット接続・URLを確認してください。ブラウザでURLを開くだけではdoGetになり、doPostの確認にはなりません。</dd><dt>ParseErrorでコードを保存できません</dt><dd>最新版のCode.gsとProtocol.gsをコピーし直してください。v0.3.0の論理代入演算子を削除し、GAS用の構文検査を追加しています。</dd><dt>同期キーが一致しません</dt><dd>GASの <code>SYNC_TOKEN</code> と、拡張に入力したキーを確認します。保存済みのキーは、入力欄を空欄のまま保存すると維持されます。</dd><dt>GASがJSONを返しません</dt><dd>URLが <code>/exec</code> であることと、公開範囲が「全員」であることを確認します。URLをブラウザで開いたときの <code>POST_REQUIRED</code> は正常です。</dd><dt>コードを更新したのに反映されません</dt><dd>Apps Scriptの「デプロイを管理 → 編集 → 新バージョン」で既存のデプロイを更新します。コードの保存だけでは公開済みの内容は更新されません。</dd><dt>GASの実行設定を確認したい</dt><dd>V8ランタイムを使います。必要なら「appsscript.json マニフェスト ファイルをエディタで表示する」を有効にし、<a href="setup/appsscript.json" download="appsscript.json">同梱のappsscript.jsonを保存</a>して参考にしてください。</dd></dl>
           <p>端末内の記録を削除してもシートの記録は残り、同期を再開すると戻ります。クラウドと端末の保存日数は別設定です。</p>
         </details>
       </div>

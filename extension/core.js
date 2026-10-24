@@ -1,4 +1,4 @@
-export const VERSION = '0.3.0';
+export const VERSION = '0.3.1';
 export const DEFAULTS = Object.freeze({ enabled: false, contact: '', pollSeconds: 180, retentionDays: 30, offlineRefreshMinutes: 60 });
 export const USER_ID = /^(usr_[a-zA-Z0-9-]{8,64}|[a-zA-Z0-9]{8,32})$/;
 export const WORLD_ID = /^wrld_[a-zA-Z0-9-]{8,64}$/;

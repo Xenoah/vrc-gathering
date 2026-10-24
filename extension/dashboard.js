@@ -3,6 +3,7 @@ import { exportAccount, cachedImages } from './db.js';
 import { demoData } from './demo.js';
 import { rankWorlds, worldJourney, worldNetwork, sortFriends, sortWorlds } from './insights.js';
 import { createNetworkView } from './network-view.js';
+import { CLOUD_ORIGINS, serverRetryDeadline } from './sync.js';
 import { IMAGE_ORIGINS } from './image-cache.js';
 import { initializeGasGuide } from './setup-guide.js';
 
@@ -13,7 +14,7 @@ const iso = v => v ? new Date(v).toISOString() : '';
 const presenceNames = { online:'ゲーム内', active:'Web／アプリ', offline:'オフライン', unknown:'不明' };
 const statusNames = { active:'オンライン', 'join me':'Join Me', 'ask me':'Ask Me', busy:'取り込み中', offline:'オフライン' };
 const accessNames = { public:'Public', friends:'Friends', 'friends-plus':'Friends+', invite:'Invite', 'invite-plus':'Invite+', 'group-public':'Group Public', 'group-plus':'Group+', 'group-members':'Group', 'group-unknown':'Group', unknown:'不明' };
-let data = { friends:[], events:[], worlds:[] }, config = { ...DEFAULTS }, state = {}, selectedAccount = '', dirty = false, renderTimer, loaded = false, cloudConfig = {}, cloudState = {}, syncDirty = false, imageDirty = false, imageConfig = {}, imageRows = [], imageRevision = null, loadedImageRevision;
+let data = { friends:[], events:[], worlds:[] }, config = { ...DEFAULTS }, state = {}, selectedAccount = '', dirty = false, renderTimer, loaded = false, cloudConfig = {}, cloudState = {}, cloudDiagnostic = {}, syncPermissions = [], testingConnection = false, syncDirty = false, imageDirty = false, imageConfig = {}, imageRows = [], imageRevision = null, loadedImageRevision;
 const demo = isDemo ? demoData() : null;
 function node(tag, content, className) { const el = document.createElement(tag); if (content != null) el.textContent = content; if (className) el.className = className; return el; }
 const imageURLs=new Map(),imageElements=new Map();let currentGraph;
@@ -31,11 +32,18 @@ async function loadImages() {
 }
 function pill(label, cls = '') { return node('span', label, 'pill ' + cls); }
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(renderTimer); renderTimer = setTimeout(() => { $('toast').hidden = true; }, 6000); }
-async function send(message) {
-  if (isDemo) { toast('デモ画面では収集・設定変更は行いません。'); return false; }
-  try { const response = await chrome.runtime.sendMessage(message); if (!response?.ok) throw new Error(response?.error || '拡張を再読み込みしてください。'); return true; }
-  catch (e) { toast(e.message); return false; }
+async function call(message) {
+  if(isDemo){toast('デモ画面では収集・設定変更は行いません。');return null;}
+  try {const response=await chrome.runtime.sendMessage(message);if(!response?.ok)throw Error(response?.error || '拡張を再読み込みしてください。');return response;}
+  catch(error){toast(error.message);return null;}
 }
+async function send(message){return !!await call(message);}
+function showSyncSkip(response) {
+  if(!response?.skipped)return;
+  const labels={disabled:'同期が無効です。設定を有効にして保存してください。',paused:'同期設定の更新中です。完了してから再試行してください。',busy:'同期または接続テストが実行中です。完了してから再試行してください。',throttled:'自動同期の実行間隔を空けています。'};
+  toast(response.reason==='backoff'?`${response.retrySource==='server'?'サーバー指定の待機中':'自動再試行の待機中'}。次回再試行：${date(response.retryAt)}`:labels[response.reason] || '現在は同期できません。');
+}
+
 function tab(name) {
   for (const b of document.querySelectorAll('[data-tab]')) { b.classList.toggle('selected', b.dataset.tab === name); b.setAttribute('aria-current', b.dataset.tab === name ? 'page' : 'false'); }
   for (const id of ['friends','ranking','journey','history','settings','help']) $(id + 'Panel').hidden = id !== name;
@@ -158,15 +166,33 @@ function renderIndividualJourney() {
   }
 }
 function renderCloud() {
-  $('syncStatus').textContent=isDemo?'デモ表示：クラウド同期は行いません。':cloudState.message || (cloudConfig.enabled?'クラウド同期：待機中':'クラウド同期：未設定／無効');
+  const syncRunning=cloudState.phase==='syncing' && Date.now()-(cloudState.lastAttemptAt||0)<150000,
+    serverWait=serverRetryDeadline(cloudState)>Date.now(),testRunning=testingConnection || cloudDiagnostic.phase==='testing' && Date.now()-(cloudDiagnostic.testedAt||0)<30000,
+    busy=syncRunning || testRunning;
+  $('syncStatus').textContent=isDemo?'デモ表示：クラウド同期は行いません。':cloudState.phase==='syncing' && !syncRunning?'前回の同期が完了していません。「接続テスト」または「今すぐ同期」で再試行してください。':cloudState.message || (cloudConfig.enabled?'クラウド同期：待機中':'クラウド同期：未設定／無効');
   $('syncTime').textContent=cloudState.lastSuccessAt?'最終同期 '+date(cloudState.lastSuccessAt):'';
-  $('syncNow').disabled=isDemo || !cloudConfig.enabled || cloudState.phase==='syncing' || cloudState.retryAt>Date.now();
-  if(cloudState.retryAt>Date.now())$('syncTime').textContent+=' · 再試行 '+date(cloudState.retryAt);
+  $('syncNow').disabled=isDemo || !cloudConfig.enabled || busy || serverWait;
+  if(cloudState.retryAt>Date.now())$('syncTime').textContent+=' · 次回再試行 '+date(cloudState.retryAt);
+  $('syncPermissionStatus').textContent=isDemo?'デモ表示：接続権限の確認は行いません。':CLOUD_ORIGINS.map((origin,i)=>new URL(origin.replace('/*','/')).hostname+'：'+(syncPermissions[i]===true?'許可済み':syncPermissions[i]===false?'未許可':'確認できません')).join(' / ');
+  $('grantSyncPermissions').disabled=isDemo || syncPermissions.every(v=>v===true)&&syncPermissions.length===2;
+  $('syncSavedState').textContent=cloudConfig.endpoint?`保存済み設定：同期${cloudConfig.enabled?'有効':'無効'} · 同期キー${cloudConfig.token?'保存済み':'未設定'}`:'保存済み設定：未設定';
+  $('syncProgress').textContent=({permission:'接続権限の確認',hello:'GASへの接続確認',export:'送信対象の読み込み',push:'GASへ送信',pull:'GASから受信',merge:'端末へ保存',pending:'次のバッチ待ち',complete:'完了'}[cloudState.stage] || (cloudState.phase==='syncing'?'同期中（旧版のため段階不明）':'未確認'));
+  $('syncLastAttempt').textContent=date(cloudState.lastAttemptAt);
+  $('syncLastError').textContent=cloudState.lastError || (cloudState.phase==='error'?cloudState.message:'なし');
+  $('syncRetryAt').textContent=cloudState.retryAt>Date.now()?`${date(serverWait?serverRetryDeadline(cloudState):cloudState.retryAt)}（${serverWait?'サーバー指定の待機':'自動再試行の待機。今すぐ同期で再試行できます'}）`:'待機なし';
+  $('testSync').disabled=isDemo || busy || serverWait;
+  $('testSync').textContent=testRunning?'接続テスト中…':'接続テスト';
+  $('syncTestMessage').textContent=cloudDiagnostic.phase==='testing' && !testRunning?'前回の接続テストが完了していません。もう一度実行してください。':cloudDiagnostic.message || '保存済みのURLと同期キーでhelloを送信します。観測記録の送受信は行いません。';
+  $('syncTestAt').textContent=date(cloudDiagnostic.testedAt);
+  $('syncTestHTTP').textContent=cloudDiagnostic.httpStatus || '応答なし';
+  $('syncTestURL').textContent=cloudDiagnostic.finalUrl || '未取得';
+  $('syncTestCode').textContent=cloudDiagnostic.responseCode || '未取得';
 }
+
 let viewSync;
 function syncView(force=false) {
   if(isDemo || !cloudConfig.enabled)return Promise.resolve();
-  if(!viewSync)viewSync=send({type:'SYNC',force}).then(()=>reload()).finally(()=>{viewSync=null;});
+  if(!viewSync)viewSync=call({type:'SYNC',force}).then(response=>{if(force)showSyncSkip(response);return reload();}).finally(()=>{viewSync=null;});
   return viewSync;
 }
 function renderHistory(container, events) {
@@ -198,7 +224,7 @@ async function load() {
   if(isDemo){ data=demo;state=demo.state;config={...DEFAULTS,enabled:true};selectedAccount=demo.accountId;
     $('account').replaceChildren(new Option('デモアカウント',demo.accountId));$('demoFlag').hidden=false;
   } else {
-    const saved=await chrome.storage.local.get(['settings','state','accountMeta','cloudSync','cloudState','imageCacheSettings','imageCacheState']);imageConfig=saved.imageCacheSettings||{};imageRevision=saved.imageCacheState||{};cloudConfig=saved.cloudSync||{};cloudState=saved.cloudState||{};config={...DEFAULTS,...saved.settings};state=saved.state||{};
+    const saved=await chrome.storage.local.get(['settings','state','accountMeta','cloudSync','cloudState','cloudDiagnostic','imageCacheSettings','imageCacheState']);imageConfig=saved.imageCacheSettings||{};imageRevision=saved.imageCacheState||{};cloudConfig=saved.cloudSync||{};cloudState=saved.cloudState||{};cloudDiagnostic=saved.cloudDiagnostic||{};syncPermissions=await Promise.all(CLOUD_ORIGINS.map(origin=>chrome.permissions?.contains({origins:[origin]}).catch(()=>null) ?? null));config={...DEFAULTS,...saved.settings};state=saved.state||{};
     const accounts=saved.accountMeta||{};
     if(!selectedAccount || !accounts[selectedAccount])selectedAccount=state.accountId||Object.keys(accounts)[0]||'';
     $('account').replaceChildren(...Object.entries(accounts).map(([id,meta])=>new Option(meta.displayName||id,id)));
@@ -259,9 +285,9 @@ $('syncForm').addEventListener('submit',async event=>{
   if(isDemo){toast('デモ画面では同期設定を保存しません。');return;}
   const settings={enabled:$('syncEnabled').checked,endpoint:$('syncEndpoint').value,token:$('syncToken').value};
   try {
-    if(settings.enabled && !await chrome.permissions.request({origins:['https://script.google.com/*','https://script.googleusercontent.com/*']}))throw Error('Googleへの接続を許可すると同期を利用できます。');
-    if(await send({type:'SAVE_SYNC',settings})) {syncDirty=false;$('syncToken').value='';$('syncNotice').textContent='保存しました';await reload();}
-  }catch(error){toast(error.message);}
+    if(settings.enabled && !await chrome.permissions.request({origins:CLOUD_ORIGINS}))throw Error('Googleへの接続を許可すると同期を利用できます。');
+    if(await send({type:'SAVE_SYNC',settings})) {syncDirty=false;$('syncToken').value='';$('syncNotice').textContent='保存しました';await reload();}else{$('syncNotice').textContent='保存できませんでした。接続権限と入力内容を確認してください。';}
+  }catch(error){$('syncNotice').textContent=error.message;toast(error.message);await reload();}
 });
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)void syncView();});
 window.addEventListener('focus',()=>void syncView());
@@ -277,3 +303,16 @@ $('imageForm').addEventListener('submit',async event=>{event.preventDefault();if
   try{if(enabled&&!await chrome.permissions.request({origins:IMAGE_ORIGINS}))throw Error('画像取得の追加接続権限を許可してください。');if(await send({type:'SAVE_IMAGES',enabled})){imageDirty=false;$('imageNotice').textContent='保存しました。収集時に画像を順次取得します。';await reload();}}catch(error){toast(error.message);}
 });
 $('clearImages').addEventListener('click',async()=>{if(await send({type:'CLEAR_IMAGES'})){await reload();toast('画像キャッシュを削除しました。収集が有効なら次回以降に再取得します。');}});
+
+$('testSync').addEventListener('click',async()=>{
+  if(syncDirty){toast('入力したURL・同期キーを先に「同期設定を保存」で保存してください。接続テストは保存済みの設定を使います。');return;}
+  testingConnection=true;renderCloud();
+  try {showSyncSkip(await call({type:'TEST_SYNC'}));await reload();}
+  finally {testingConnection=false;renderCloud();}
+});
+$('grantSyncPermissions').addEventListener('click',async()=>{
+  if(isDemo)return;
+  try {const allowed=await chrome.permissions.request({origins:CLOUD_ORIGINS});toast(allowed?'Googleへの接続を許可しました。接続テストを実行してください。':'接続権限が許可されませんでした。同期設定は変更していません。');await reload();}
+  catch(error){toast(error.message);}
+});
+if(!isDemo){chrome.permissions?.onAdded?.addListener(()=>void reload());chrome.permissions?.onRemoved?.addListener(()=>void reload());}

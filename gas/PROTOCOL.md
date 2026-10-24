@@ -27,7 +27,9 @@ GASの `/exec` へPOSTし、`Content-Type: text/plain;charset=UTF-8` のJSONを�
 
 `datasetId` は `VRCSchema` に保存され、同一プロジェクトの再デプロイで維持します。別シートやコピーしたシートでは変わります。拡張は変更を検出すると送信済み情報とカーソルをリセットし、端末内の記録から再同期します。**1つのスプレッドシートは1つのGASプロジェクトから更新してください**。複数端末は同じウェブアプリURLを使います。
 
-エラーは `{"protocol":2,"ok":false,"code":"…"}`。`AUTH` はキー不一致、`CONFIG` は設定・列構成不一致、`BUSY` はロック競合、`LIMIT` は容量・バッチ制限、`REQUEST` は要求不正、`SCHEMA` は未対応形式、`DATASET` はデータセット不一致、`MIGRATION` は旧表の移行失敗、`SERVER` はその他のサーバーエラーです。再試行時は指数バックオフとHTTPのRetry-Afterを適用します。
+エラーは `{"protocol":2,"ok":false,"code":"…"}`。`AUTH` はキー不一致、`CONFIG` は設定・列構成不一致、`BUSY` はロック競合、`LIMIT` は容量・バッチ制限、`REQUEST` は要求不正、`SCHEMA` は未対応形式、`DATASET` はデータセット不一致、`MIGRATION` は旧表の移行失敗、`SERVER` はその他のサーバーエラーです。自動再試行は指数バックオフを適用します。拡張は自前の待機期限 `retryAt` とサーバー指定の期限 `serverRetryAt` を区別し、手動同期・接続テストは自前の待機のみ解除できます。接続テストで受け取ったRetry-Afterも同期側へ反映します。
+
+接続診断は保存済み設定でprotocol 2のhelloだけを送ります。クライアント側で権限不足（PERMISSION）、HTML／ログイン応答（PUBLIC_ACCESS）、通信失敗（NETWORK）、非JSON（NON_JSON）も区別します。診断にはHTTPステータス、クエリを除いた最終URL、既知の応答コードのみを保存し、キー・応答本文を含めません。
 
 ## レコード
 

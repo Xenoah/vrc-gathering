@@ -1,4 +1,4 @@
-# VRC Friends Observer v0.3.0
+# VRC Friends Observer v0.3.1
 
 自分のVRChatアカウントに公開されているフレンドの接続状態・ワールド・インスタンスを定期取得し、PC内へ記録するChrome拡張です。**ローカル利用時はコンパイル・Node.js・Python・外部サーバーは不要**です。Googleスプレッドシート同期を使う場合は、同梱手順でGASを公開します。
 
@@ -151,7 +151,7 @@ Chrome拡張の削除・プロファイル削除でデータが消えるため�
 | api.vrchat.cloud / files.vrchat.cloud（任意権限） | 画像キャッシュを有効にした場合の画像取得 |
 | declarativeNetRequestWithHostAccess | **この拡張自身のVRChat APIへのGETだけ**に識別用User-Agentを設定（vrchat.com、および権限付与済みのapi.vrchat.cloud） |
 
-User-Agentはブラウザ本来の識別子を維持し、その末尾に `VRCFriendsObserver/0.3.0 連絡先` を明示します。VRChatサイトや他の拡張からの要求は書き換えません。VRChatは非公式API利用をサポートしておらず、User-Agentへの付加形式も個別承認を受けたものではありません。観測APIが転送を返した場合は追従せず停止します。画像取得のみVRChatの画像配信先への転送に対応し、応答先と画像形式・サイズを検証します。
+User-Agentはブラウザ本来の識別子を維持し、その末尾に `VRCFriendsObserver/0.3.1 連絡先` を明示します。VRChatサイトや他の拡張からの要求は書き換えません。VRChatは非公式API利用をサポートしておらず、User-Agentへの付加形式も個別承認を受けたものではありません。観測APIが転送を返した場合は追従せず停止します。画像取得のみVRChatの画像配信先への転送に対応し、応答先と画像形式・サイズを検証します。
 
 ## 検証状況
 
@@ -176,3 +176,12 @@ npm test
 - Chrome storage and cookies: https://developer.chrome.com/docs/extensions/develop/concepts/storage-and-cookies
 
 VRChat公式製品ではありません。APIの仕様変更で修正が必要になる可能性があります。
+
+
+### GASの設定確認と接続診断
+
+GASエディターの `createSyncToken` で同期キーを生成し、スクリプトプロパティから拡張へコピーします。有効な既存キーは維持されます。`setup` は不正な設定項目を日本語で表示します。コードを更新したら、公開範囲を「全員」にして新バージョンで再デプロイしてください。
+
+拡張の「収集設定 → 接続状態・診断」で、保存済み設定、Googleへの権限、最終同期試行・エラー・待機期限を確認できます。「接続テスト」は保存済みのURLとキーでhelloだけを送信し、HTTPステータス・最終URL（クエリ除外）・応答コードを表示します。入力欄を変更した場合は先に保存してください。キーや応答本文を診断には残しません。
+
+通常の自動再試行は指数バックオフを使います。「今すぐ同期」「接続テスト」は拡張側の待機を解除できますが、サーバー指定のRetry-Afterは期限まで維持します。この変更はGAS同期のみで、VRChat収集の待機規則は従来どおりです。

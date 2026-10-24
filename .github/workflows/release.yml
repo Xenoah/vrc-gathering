@@ -19,11 +19,14 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
+      - name: Install development dependencies
+        run: npm ci --ignore-scripts
       - name: Run unit and service-worker mock tests
         run: npm test
-      - name: Check JavaScript syntax
+      - name: Check extension and GAS syntax
         run: |
           for file in extension/*.js; do node --check "$file"; done
+          npm run check:gas
       - name: Verify tag and build distribution
         env:
           RELEASE_TAG: ${{ github.ref_name }}

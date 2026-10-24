@@ -4,10 +4,13 @@ const LEGACY_HEADERS = ['key','version','kind','accountId','observedAt','display
 const HEADERS = ['record_id','revision','record_kind','account_id','observed_at_ms','display_name','presence','world_id','instance_id','world_name','payload_json','schema_version','operation','entity_id','received_at_ms','extensions_json'];
 const FIELDS = {friends:['platform','state_first_observed_at_ms','is_friend'],events:['event_kind','previous_observed_at_ms','previous_world_id','previous_instance_id'],worlds:['author_name','capacity'],runs:['started_at_ms','completed_at_ms','observed_count','changed_count'],accounts:[]};
 const MAX_RECORDS = 50000;
-function configuration_() {
-  const props=PropertiesService.getScriptProperties(), spreadsheetId=props.getProperty('SPREADSHEET_ID'),token=props.getProperty('SYNC_TOKEN');
+function configuration_(detailed = false) {
+  const props=PropertiesService.getScriptProperties(), spreadsheetId=(props.getProperty('SPREADSHEET_ID') || '').trim(),token=props.getProperty('SYNC_TOKEN');
   const days=Number(props.getProperty('RETENTION_DAYS') || 30);
-  if (!spreadsheetId || !/^[A-Za-z0-9_-]{32,256}$/.test(token || '') || !Number.isInteger(days) || days<1 || days>365) throw Error('CONFIG');
+  function invalid(message) { throw Error(detailed ? message : 'CONFIG'); }
+  if (!spreadsheetId) invalid('SPREADSHEET_ID が未設定です。スクリプトプロパティにスプレッドシートIDを設定してください。');
+  if (!/^[A-Za-z0-9_-]{32,256}$/.test(token || '')) invalid('SYNC_TOKEN は32〜256文字の英数字・ハイフン・アンダースコアにしてください（現在 '+(token || '').length+' 文字）。createSyncToken を実行すると生成できます。');
+  if (!Number.isInteger(days) || days<1 || days>365) invalid('RETENTION_DAYS は1〜365の整数にしてください。未設定の場合は30日です。');
   return {props,spreadsheetId,token,days};
 }
 function writeValues_(sheet,start,values) {
@@ -51,7 +54,7 @@ function database_(config) {
   let metadata=Object.fromEntries(rows_(registry,2));
   if(metadata.schema_version && Number(metadata.schema_version)!==2)throw Error('SCHEMA');
   const datasetId=metadata.dataset_id && metadata.spreadsheet_id===config.spreadsheetId ? metadata.dataset_id : Utilities.getUuid();
-  if(datasetId!==metadata.dataset_id){metadata.legacy_migrated ||= 'false';writeValues_(registry,2,[['schema_version','2'],['dataset_id',datasetId],['legacy_migrated',metadata.legacy_migrated],['spreadsheet_id',config.spreadsheetId]]);}
+  if(datasetId!==metadata.dataset_id){if(!metadata.legacy_migrated)metadata.legacy_migrated='false';writeValues_(registry,2,[['schema_version','2'],['dataset_id',datasetId],['legacy_migrated',metadata.legacy_migrated],['spreadsheet_id',config.spreadsheetId]]);}
   if(metadata.legacy_migrated!=='true') {
     const legacy=book.getSheetByName('VRCRecords');
     if(legacy){
@@ -118,13 +121,31 @@ function doPost(event){
     if(!Number.isSafeInteger(request.cursor)||request.cursor<0||request.cursor>db.sequence||!Number.isInteger(request.limit)||request.limit<1||request.limit>SYNC_BATCH_SIZE)throw Error('REQUEST');
     const candidates=db.rows.filter(r=>Number(r[1])>request.cursor&&Number(r[4])>=cutoff).sort((a,b)=>Number(a[1])-Number(b[1]));
     const selected=candidates.slice(0,request.limit),hasMore=candidates.length>selected.length;
-    return json_({ok:true,datasetId:db.datasetId,records:selected.map(r=>({...normalizeRecord(r[2],JSON.parse(r[10]),now),revision:Number(r[1])})),cursor:hasMore?Number(selected.at(-1)[1]):db.sequence,hasMore},protocol);
+    return json_({ok:true,datasetId:db.datasetId,records:selected.map(r=>({...normalizeRecord(r[2],JSON.parse(r[10]),now),revision:Number(r[1])})),cursor:hasMore?Number(selected[selected.length-1][1]):db.sequence,hasMore},protocol);
   }catch(error){return json_({ok:false,code:['AUTH','CONFIG','BUSY','LIMIT','REQUEST','SCHEMA','DATASET','MIGRATION'].includes(error.message)?error.message:'SERVER'},protocol);}
   finally{if(lock?.hasLock())lock.releaseLock();}
 }
+// Run manually in the editor. Keys are never returned or written to execution logs.
+function createSyncToken() {
+  const lock=LockService.getScriptLock();
+  if(!lock.tryLock(10000))throw Error('別の処理が実行中です。少し待ってから再実行してください。');
+  try {
+    const props=PropertiesService.getScriptProperties(),current=props.getProperty('SYNC_TOKEN');
+    let message;
+    if(/^[A-Za-z0-9_-]{32,256}$/.test(current || '')) {
+      message='有効な SYNC_TOKEN が既にあるため上書きしませんでした。プロジェクトの設定 → スクリプトプロパティで確認し、拡張にも同じ値を設定してください。';
+    } else {
+      const token=Utilities.getUuid().replace(/-/g,'')+Utilities.getUuid().replace(/-/g,'');
+      props.setProperty('SYNC_TOKEN',token);
+      message='64文字の SYNC_TOKEN を生成・保存しました。プロジェクトの設定 → スクリプトプロパティからコピーし、拡張の同期キー欄へ貼り付けて保存してください。';
+    }
+    Logger.log(message);
+    return message;
+  } finally { lock.releaseLock(); }
+}
 function setup(){
   const lock=LockService.getScriptLock();if(!lock.tryLock(10000))throw Error('BUSY');
-  try{database_(configuration_());if(!ScriptApp.getProjectTriggers().some(t=>t.getHandlerFunction()==='pruneRecords'))ScriptApp.newTrigger('pruneRecords').timeBased().everyDays(1).create();return '5種類の記録テーブルとVRCSchema、日次整理を設定しました。旧VRCRecordsは移行元として残しています。';}
+  try{database_(configuration_(true));if(!ScriptApp.getProjectTriggers().some(t=>t.getHandlerFunction()==='pruneRecords'))ScriptApp.newTrigger('pruneRecords').timeBased().everyDays(1).create();return '5種類の記録テーブルとVRCSchema、日次整理を設定しました。旧VRCRecordsは移行元として残しています。';}
   finally{lock.releaseLock();}
 }
 function pruneRecords(){

@@ -1,7 +1,13 @@
 {
   "name": "vrc-friends-observer",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
-  "scripts": { "test": "node --experimental-vm-modules --test tests/*.test.mjs" }
+  "scripts": {
+    "test": "node --experimental-vm-modules --test tests/*.test.mjs",
+    "check:gas": "node scripts/check_gas_syntax.mjs"
+  },
+  "devDependencies": {
+    "acorn": "8.15.0"
+  }
 }

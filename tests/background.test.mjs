@@ -106,3 +106,23 @@ test('image collection is opt-in and candidates are queued only after the accoun
   await switched.command({type:'SAVE_IMAGES',enabled:true});await switched.start();assert.equal(switched.saved.images.length,0);switched.stop();
   const denied=await harness(good,false);assert.equal((await denied.command({type:'SAVE_IMAGES',enabled:true})).ok,false);assert.equal(denied.store.imageCacheSettings,undefined);denied.stop();
 });
+
+test('connection test command uses saved settings and performs one hello without enabling sync',async()=>{
+  const hello={protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],maxBatch:100};
+  const h=await harness(()=>({body:hello}));
+  await h.command({type:'SAVE_SYNC',settings:{enabled:false,endpoint:'https://script.google.com/macros/s/test/exec',token:'test_token_0123456789_abcdefghijklmnopqrstuvwxyz'}});
+  assert.equal(h.calls.length,0);const response=await h.command({type:'TEST_SYNC'});assert.equal(response.connected,true);assert.equal(h.calls.length,1);
+  assert.equal(JSON.parse(h.calls[0].options.body).action,'hello');assert.equal(h.calls[0].options.credentials,'omit');assert.equal(h.store.cloudSync.enabled,false);
+  assert.equal(h.store.cloudDiagnostic.responseCode,'OK');assert.equal(h.store.cloudCheckpoint.cursor,0);h.stop();
+});
+test('manual sync, diagnostics, saving the key and local clearing cannot shorten a server Retry-After',async()=>{
+  const h=await harness(()=>({status:429,headers:{'Retry-After':'3600'}})),settings={enabled:true,endpoint:'https://script.google.com/macros/s/test/exec',token:'test_token_0123456789_abcdefghijklmnopqrstuvwxyz'};
+  await h.command({type:'SAVE_SYNC',settings});await h.flush();const deadline=h.store.cloudState.serverRetryAt;assert.ok(deadline);const count=h.calls.length;
+  assert.equal((await h.command({type:'TEST_SYNC'})).retryAt,deadline);assert.equal((await h.command({type:'SYNC',force:true})).retrySource,'server');
+  await h.command({type:'SAVE_SYNC',settings:{...settings,token:'changed_token_0123456789_abcdefghijklmnopqrstuvwxyz'}});await h.flush();assert.equal(h.store.cloudState.serverRetryAt,deadline);assert.equal(h.calls.length,count);
+  await h.command({type:'CLEAR'});assert.equal(h.store.cloudState.serverRetryAt,deadline);assert.equal(h.store.cloudSync.enabled,false);h.stop();
+});
+test('a connection test with missing Google permission does not call fetch',async()=>{
+  const h=await harness(good,false);await h.command({type:'SAVE_SYNC',settings:{enabled:false,endpoint:'https://script.google.com/macros/s/test/exec',token:'test_token_0123456789_abcdefghijklmnopqrstuvwxyz'}});
+  const response=await h.command({type:'TEST_SYNC'});assert.equal(response.diagnostic.responseCode,'PERMISSION');assert.equal(h.calls.length,0);h.stop();
+});
