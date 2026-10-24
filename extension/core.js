@@ -1,3 +1,4 @@
+import { continuityMetadata } from './activity-analysis.js';
 export const VERSION = '0.3.2';
 export const DEFAULTS = Object.freeze({ enabled: false, contact: '', pollSeconds: 180, retentionDays: 30, offlineRefreshMinutes: 60 });
 export const USER_ID = /^(usr_[a-zA-Z0-9-]{8,64}|[a-zA-Z0-9]{8,32})$/;
@@ -83,7 +84,11 @@ export function reconcile(previous, observations, accountId, completedAt, fullRo
     const p = old.get(f.id);
     const changed = !p || fingerprint(p) !== fingerprint(f);
     const entry = { ...f, accountId, firstObservedAt: p?.firstObservedAt || f.observedAt,
-      stateFirstObservedAt: changed ? f.observedAt : p.stateFirstObservedAt };
+      stateFirstObservedAt: changed ? f.observedAt : p.stateFirstObservedAt,
+      // Distinguish continued presence/world from profile or status-message edits.
+      // Namespaced extensions are preserved by the existing Sheets sync protocol.
+      extensions: { ...p?.extensions, ...f.extensions,
+        'vrc.activity': continuityMetadata(p, f) } };
     records.push(entry);
     if (changed) events.push({ accountId, userId: f.id, displayName: f.displayName,
       observedAt: f.observedAt, previousObservedAt: p?.observedAt || null,
