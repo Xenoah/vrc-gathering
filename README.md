@@ -38,4 +38,4 @@ npm test
 python scripts/package_release.py
 ```
 
-配布物は `dist/` に作成します。GitHub Actionsはmain／PRでテストし、`v*` タグが付いたコードのバージョン一致を検証して、テストに合格したZIPとSHA-256をリリースへ公開します。
+配布物は `dist/` に作成します。GitHub Actionsはmain／PRでテストし、`v*` タグが付いたコードのバージョン一致を検証して、テストに合格したZIPとSHA-256をリリースへ公開します。初回のみ、mainへの `release: publish v0.1.0` コミットからも同じ検証を実行し、そのコミットを対象にタグとリリースを作成します。

@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     tags: ['v*']
+    branches: [main]
 
 permissions:
   contents: write
@@ -13,6 +14,7 @@ concurrency:
 
 jobs:
   publish:
+    if: github.ref_type == 'tag' || github.event.head_commit.message == 'release: publish v0.1.0'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -24,16 +26,28 @@ jobs:
       - name: Check JavaScript syntax
         run: |
           for file in extension/*.js; do node --check "$file"; done
+      - name: Resolve release version
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = 'tag' ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="v$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).version')"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Verify tag and build distribution
-        run: python scripts/package_release.py --tag "$GITHUB_REF_NAME"
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: python scripts/package_release.py --tag "$RELEASE_TAG"
       - name: Publish release with ZIP and checksum
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            "dist/vrc-gathering-${GITHUB_REF_NAME}.zip" \
-            "dist/vrc-gathering-${GITHUB_REF_NAME}.zip.sha256" \
-            --verify-tag \
-            --title "${GITHUB_REF_NAME} — First release" \
+          gh release create "$RELEASE_TAG" \
+            "dist/vrc-gathering-${RELEASE_TAG}.zip" \
+            "dist/vrc-gathering-${RELEASE_TAG}.zip.sha256" \
+            --target "$GITHUB_SHA" \
+            --title "${RELEASE_TAG} — First release" \
             --notes-file RELEASE_NOTES.md \
             --latest
