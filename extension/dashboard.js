@@ -2,6 +2,7 @@ import { DEFAULTS, csv, VERSION } from './core.js';
 import { exportAccount } from './db.js';
 import { demoData } from './demo.js';
 import { rankWorlds, worldJourney } from './insights.js';
+import { initializeGasGuide } from './setup-guide.js';
 
 const $ = id => document.getElementById(id), isDemo = new URLSearchParams(location.search).get('demo') === '1';
 const dateFormat = new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
@@ -214,3 +215,5 @@ $('syncForm').addEventListener('submit',async event=>{
 });
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)void syncView();});
 window.addEventListener('focus',()=>void syncView());
+
+initializeGasGuide({showSettings:()=>tab('settings'),notify:toast});

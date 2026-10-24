@@ -33,11 +33,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          release_title="$(sed -n '1s/^# //p' RELEASE_NOTES.md)"
+          test -n "$release_title"
           gh release create "$RELEASE_TAG" \
             "dist/vrc-gathering-${RELEASE_TAG}.zip" \
             "dist/vrc-gathering-${RELEASE_TAG}.zip.sha256" \
             --target "$GITHUB_SHA" \
             --verify-tag \
-            --title "${RELEASE_TAG} — ワールド遷移・ランキング・Sheets同期" \
+            --title "$release_title" \
             --notes-file RELEASE_NOTES.md \
             --latest

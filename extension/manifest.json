@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VRC Friends Observer",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "自分に公開されているVRChatフレンドの状態・ワールドをローカル記録します。",
   "minimum_chrome_version": "120",
   "permissions": [
@@ -19,15 +19,26 @@
     "type": "module"
   },
   "action": {
-    "default_title": "VRC Friends Observerを開く"
+    "default_title": "VRC Friends Observerを開く",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png"
+    }
   },
   "options_page": "dashboard.html",
   "incognito": "not_allowed",
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'none'; connect-src https://vrchat.com https://script.google.com https://script.googleusercontent.com; img-src 'self' data:; style-src 'self'; base-uri 'none'"
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'self' https://vrchat.com https://script.google.com https://script.googleusercontent.com; img-src 'self' data:; style-src 'self'; base-uri 'none'"
   },
   "optional_host_permissions": [
     "https://script.google.com/*",
     "https://script.googleusercontent.com/*"
-  ]
+  ],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
 }

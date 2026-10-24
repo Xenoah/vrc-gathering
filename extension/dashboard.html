@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="ja">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VRC Friends Observer</title><link rel="stylesheet" href="dashboard.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VRC Friends Observer</title><link rel="stylesheet" href="dashboard.css"><link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png"></head>
 <body>
-<header class="top"><div class="brand"><span class="brand-icon" aria-hidden="true">◎</span><div><strong>VRC Friends Observer</strong><small>LOCAL FRIEND ACTIVITY · v0.2.0</small></div></div><div class="top-actions"><span id="demoFlag" class="pill" hidden>デモデータ</span><a href="https://vrchat.com/home" target="_blank" rel="noreferrer">VRChatを開く ↗</a></div></header>
+<header class="top"><div class="brand"><img class="brand-icon" src="icons/icon-128.png" width="48" height="48" alt=""><div><strong>VRC Friends Observer</strong><small>LOCAL FRIEND ACTIVITY · v0.2.1</small></div></div><div class="top-actions"><span id="demoFlag" class="pill" hidden>デモデータ</span><a href="https://vrchat.com/home" target="_blank" rel="noreferrer">VRChatを開く ↗</a></div></header>
 <main>
 <section class="hero"><div><div class="eyebrow">YOUR FRIENDS, AT A GLANCE</div><h1>フレンドの今を、記録に。</h1><p>自分に公開されている状態とワールドを、PC内に保存。</p></div><div class="hero-actions"><button id="start" class="primary">収集を開始</button><button id="refresh">今すぐ更新</button></div></section>
 <div class="statusbar" role="status" aria-live="polite"><span id="phaseDot" class="status-dot"></span><strong id="phase">停止中</strong><span id="message">設定を保存し、収集を開始してください。</span><span id="nextRun" class="push"></span></div>
@@ -34,13 +34,41 @@
   <form id="settingsForm"><div class="form-grid"><label>API利用者の連絡先<input id="contact" type="text" maxlength="180" placeholder="https://github.com/あなたのID" required><small>自分のメールアドレスまたはHTTPSプロフィールURL。API識別用のUser-Agentに含めます。</small></label><label>更新間隔<select id="pollSeconds"><option value="60">1分</option><option value="180">3分（推奨）</option><option value="300">5分</option><option value="600">10分</option><option value="1800">30分</option><option value="3600">60分</option></select><small>前後10%のランダム幅。API呼び出しは2.2秒以上空けて直列実行します。</small></label><label>保存日数<select id="retentionDays"><option value="7">7日</option><option value="30">30日</option><option value="90">90日</option><option value="180">180日</option><option value="365">365日</option></select><small>期間を過ぎた履歴・未更新データを自動削除。短縮すると対象データが削除されます。</small></label><label>オフライン名簿の再取得<select id="offlineRefreshMinutes"><option value="30">30分</option><option value="60">60分（推奨）</option><option value="180">3時間</option><option value="1440">24時間</option></select><small>オフラインへの変化は通常巡回の名簿でも確認します。これは名前などの再取得間隔です。</small></label></div><button type="submit" class="primary">設定を保存</button><span id="settingsNotice" role="status"></span></form>
   <section class="sync-settings" aria-labelledby="syncHeading">
     <h3 id="syncHeading">Googleスプレッドシート同期</h3>
-    <p class="muted">同梱のgas/README.mdに沿ってGASをデプロイし、URLと同期キーを登録してください。有効にすると全アカウントのフレンド・ワールド・変更履歴・巡回記録を送受信します。</p>
+    <p class="muted">下のセットアップ手順でGASを用意し、URLと同期キーを登録してください。有効にすると全アカウントのフレンド・ワールド・変更履歴・巡回記録を送受信します。</p>
+    <p><button type="button" data-open-gas-setup>GASセットアップ手順を見る</button></p>
     <form id="syncForm">
       <label class="check-label"><input id="syncEnabled" type="checkbox">記録をGoogleスプレッドシートと同期する</label>
       <div class="form-grid"><label>GASのウェブアプリURL<input id="syncEndpoint" type="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label><label>同期キー<input id="syncToken" type="password" placeholder="32文字以上。保存済みの場合は空欄で維持" autocomplete="new-password"><small>GASのSYNC_TOKENと同じ値。VRChatの認証情報は入力しません。</small></label></div>
       <button type="submit" class="primary">同期設定を保存</button><span id="syncNotice" role="status"></span>
     </form>
     <p class="muted">収集後・画面表示時・約5分ごとに同期します。通信失敗時は端末の記録を表示し、再試行します。別端末でも同じURLと同期キーを設定できます。</p>
+    <details id="gasSetupGuide" class="setup-guide">
+      <summary>はじめてのGASセットアップ</summary>
+      <div class="setup-guide-body">
+        <p class="setup-lead">スプレッドシートの作成から同期開始まで、次の6ステップで設定できます。GAS（Google Apps Script）は、ご自身のGoogleアカウントで動作します。</p>
+        <ol class="setup-steps">
+          <li><h4>スプレッドシートを新規作成</h4><p><a href="https://sheets.google.com/create" target="_blank" rel="noreferrer">Googleスプレッドシートを作成 ↗</a>し、共有設定は非公開のままにします。URLの <code>/spreadsheets/d/</code> と次の <code>/</code> の間がスプレッドシートIDです。</p></li>
+          <li><h4>Apps Scriptにコードを配置</h4><p>シートの「拡張機能 → Apps Script」を開き、<code>Code.gs</code> の内容を置き換えます。スクリプトファイル <code>Protocol</code> も追加し、<code>Protocol.gs</code> の内容を貼り付けます。2つとも必要です。</p>
+            <div class="setup-files">
+              <div><strong>Code.gs</strong><span>保存・送受信の処理</span><button type="button" data-copy-gas="Code.gs">Code.gs をコピー</button><a href="setup/Code.gs" download="Code.gs">ファイルを保存</a></div>
+              <div><strong>Protocol.gs</strong><span>記録形式の検証</span><button type="button" data-copy-gas="Protocol.gs">Protocol.gs をコピー</button><a href="setup/Protocol.gs" download="Protocol.gs">ファイルを保存</a></div>
+            </div>
+            <p class="muted">コードは拡張に同梱しています。コピーできない場合は「ファイルを保存」で取得し、テキストエディターから貼り付けてください。</p>
+          </li>
+          <li><h4>3つのスクリプトプロパティを設定</h4><p>Apps Scriptの「プロジェクトの設定 → スクリプトプロパティ」で追加します。</p>
+            <dl class="setup-properties"><dt><code>SPREADSHEET_ID</code></dt><dd>手順1で控えたスプレッドシートID。</dd><dt><code>SYNC_TOKEN</code></dt><dd>パスワードマネージャー等で生成したランダムな32〜256文字の英数字・ハイフン・アンダースコア。後で拡張にも同じ値を設定します。</dd><dt><code>RETENTION_DAYS</code></dt><dd>クラウドの保存日数。1〜365。未設定の場合は30日です。</dd></dl>
+            <p>同期キーを知る人は保存した全アカウントの記録を読み書きできます。キーは他人に共有せず、VRChatのパスワードや認証トークンは入力しないでください。</p>
+          </li>
+          <li><h4>setupを一度実行</h4><p>エディター上部で <code>setup</code> 関数を選んで実行し、Googleのアクセス許可を確認します。<code>VRCRecords</code> シートと、保存期間を過ぎた記録を日次で整理するトリガーが作成されます。</p></li>
+          <li><h4>ウェブアプリとしてデプロイ</h4><p>「デプロイ → 新しいデプロイ → ウェブアプリ」で、「次のユーザーとして実行」は <strong>自分</strong>、「アクセスできるユーザー」は <strong>全員</strong> を選びます。GAS側で同期キーを照合するため、スプレッドシート自体の公開は不要です。</p><p>デプロイ後、末尾が <code>/exec</code> のURLをコピーします。<code>/dev</code> は使いません。組織の設定で「全員」を選べない場合は、管理者が認める公開方法を確認してください。</p></li>
+          <li><h4>この拡張にURLと同期キーを登録</h4><p>同期設定にGASのURLと <code>SYNC_TOKEN</code> と同じキーを入力し、「記録をGoogleスプレッドシートと同期する」をオンにして保存します。Googleへの追加接続権限を許可し、上部に「同期完了」が表示されることを確認してください。</p><p>別端末でも同じURLとキーを登録できます。閲覧だけならVRChatへのログインや収集開始は不要です。</p><button type="button" id="backToSyncSettings" class="primary">同期設定へ戻る</button></li>
+        </ol>
+        <details class="setup-troubleshooting"><summary>うまく同期できないとき・GASを更新するとき</summary>
+          <dl><dt>同期キーが一致しません</dt><dd>GASの <code>SYNC_TOKEN</code> と、拡張に入力したキーを確認します。保存済みのキーは、入力欄を空欄のまま保存すると維持されます。</dd><dt>GASがJSONを返しません</dt><dd>URLが <code>/exec</code> であることと、公開範囲が「全員」であることを確認します。URLをブラウザで開いたときの <code>POST_REQUIRED</code> は正常です。</dd><dt>コードを更新したのに反映されません</dt><dd>Apps Scriptの「デプロイを管理 → 編集 → 新バージョン」で既存のデプロイを更新します。コードの保存だけでは公開済みの内容は更新されません。</dd><dt>GASの実行設定を確認したい</dt><dd>V8ランタイムを使います。必要なら「appsscript.json マニフェスト ファイルをエディタで表示する」を有効にし、<a href="setup/appsscript.json" download="appsscript.json">同梱のappsscript.jsonを保存</a>して参考にしてください。</dd></dl>
+          <p>端末内の記録を削除してもシートの記録は残り、同期を再開すると戻ります。クラウドと端末の保存日数は別設定です。</p>
+        </details>
+      </div>
+    </details>
   </section>
   <div class="info"><strong>保存される情報</strong><p>フレンドID、表示名、接続状態、ステータス・メッセージ、プラットフォーム、公開されたワールドID・名前・インスタンスID・種類・地域、観測日時と変更履歴。ワールドの作者名・定員もキャッシュします。</p><p>PC内の拡張専用データベースに保存。同期を有効にした場合は指定のGoogleスプレッドシートにも保存します。VRChatの認証情報は同期しません。インスタンスIDに作成者ID等が含まれる場合があります。</p></div>
   <div class="danger-row"><div><strong>記録をすべて削除</strong><p>この端末の全アカウントの記録を削除し、収集・同期を停止します。スプレッドシートの記録は残ります。同期を再開すると再取得されます。</p></div><button id="clear" class="danger">この端末の記録を削除</button></div>
@@ -48,6 +76,7 @@
 <section id="helpPanel" class="panel padded" hidden>
   <div class="section-heading"><span class="eyebrow">QUICK START</span><h2>Windowsで継続して使う</h2></div>
   <ol class="steps"><li><strong>同じChromeプロファイルでログイン</strong><p><a href="https://vrchat.com/home/login" target="_blank" rel="noreferrer">vrchat.com</a>のログインと2段階認証を完了。パスワード・認証トークンをこの拡張に入力する必要はありません。</p></li><li><strong>連絡先を保存して収集を開始</strong><p>収集設定にAPI識別用の連絡先を入力。拡張のアイコンから、いつでもこの画面を開けます。</p></li><li><strong>Chromeのバックグラウンド実行を有効に</strong><p>Chrome「設定 → システム → Google Chromeを閉じた際にバックグラウンドアプリの処理を続行する」を有効にします。Windowsログオン時の起動は同梱のwindows/Install-Startup.ps1でも設定できます。</p></li><li><strong>履歴は定期的にエクスポート</strong><p>拡張の削除・プロファイル消去で記録も消えます。JSONは全履歴の保存用、CSVは一覧・差分の分析用です。JSONファイルの手動再インポートは未対応です。GAS同期では別端末の記録を取り込めます。</p></li></ol>
+  <div class="setup-callout"><div><h3>Googleスプレッドシートと同期する</h3><p>GASの作成・公開・接続設定を、拡張内のガイドで進められます。必要なコードも同梱しています。</p></div><button type="button" data-open-gas-setup>GASセットアップ手順を見る</button></div>
   <div class="help-grid"><article><h3>収集が止まる条件</h3><p>Chromeの完全終了、Windowsのサインアウト／スリープ、ネット切断、認証切れ、サイト権限の未許可。Windowsのログオン前には動きません。</p></article><article><h3>公開範囲をそのまま扱う</h3><p>APIが所在を非公開にしている場合は「非公開」。非公開の居場所の推測、非フレンドの追跡、同席者一覧の収集は行いません。</p></article><article><h3>大量のフレンドがいる場合</h3><p>1巡回でオンライン最大2,000件、オフライン名簿最大500件を取得し、続きは次回へ。ワールド名は最大5件ずつ補完します。ページ取得中の状態変化で重複や抜けが生じる場合があり、IDで重複排除します。</p></article><article><h3>エラー時の動作</h3><p>401／403は停止。429／通信失敗は待機し、Retry-Afterと指数バックオフを適用。停止・再開やデータ削除をしても待機時間は解除しません。</p></article></div>
   <p class="footnote">個人用の非公式ツールです。API変更に追従が必要になる場合があります。User-AgentはChromeの識別子にアプリ名・版・連絡先を付加します。<a href="https://hello.vrchat.com/creator-guidelines" target="_blank" rel="noreferrer">VRChat Creator Guidelines</a> / <a href="https://vrchat.community/reference/get-friends" target="_blank" rel="noreferrer">コミュニティAPI資料</a></p><a href="dashboard.html?demo=1" target="_blank">架空データで画面を見る ↗</a>
 </section>

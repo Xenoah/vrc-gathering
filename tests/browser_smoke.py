@@ -9,6 +9,11 @@ from playwright.sync_api import sync_playwright, expect
 
 ROOT = Path(__file__).resolve().parents[1]
 class QuietHandler(SimpleHTTPRequestHandler):
+    def end_headers(self):
+        manifest = json.loads((ROOT / 'extension/manifest.json').read_text())
+        self.send_header('Content-Security-Policy', manifest['content_security_policy']['extension_pages'])
+        super().end_headers()
+
     def log_message(self, *args):
         pass
 
@@ -26,6 +31,27 @@ try:
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.goto(base + '/dashboard.html?demo=1')
             expect(page.locator('#friendsBody tr')).to_have_count(9)
+            assert page.locator('.brand-icon').evaluate('(img) => img.complete && img.naturalWidth === 128')
+            page.locator('[data-tab=help]').click()
+            page.locator('#helpPanel [data-open-gas-setup]').click()
+            expect(page.locator('#gasSetupGuide')).to_have_attribute('open', '')
+            expect(page.locator('#settingsPanel')).to_be_visible()
+            expect(page.locator('.setup-steps > li')).to_have_count(6)
+            context.grant_permissions(['clipboard-read', 'clipboard-write'])
+            for name in ['Code.gs', 'Protocol.gs']:
+                page.locator(f'[data-copy-gas="{name}"]').click()
+                expect(page.locator('#toast')).to_contain_text(name + ' をコピーしました。')
+                assert page.evaluate('navigator.clipboard.readText()') == (ROOT / 'gas' / name).read_text()
+                with page.expect_download() as event:
+                    page.locator(f'a[download="{name}"]').click()
+                assert Path(event.value.path()).read_bytes() == (ROOT / 'gas' / name).read_bytes()
+            page.set_viewport_size({'width':390, 'height':844})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            page.screenshot(path='/tmp/vrc-gas-guide-mobile.png', full_page=True)
+            page.locator('#backToSyncSettings').click()
+            expect(page.locator('#syncEndpoint')).to_be_focused()
+            page.set_viewport_size({'width':1280, 'height':900})
+            print('PASS: bundled icon, six-step GAS guide, code copy/download under CSP, mobile layout and settings navigation')
             page.locator('[data-tab=ranking]').click()
             expect(page.locator('.world-card')).to_have_count(3)
             expect(page.locator('.world-card').first).to_contain_text('星灯りの展望台')

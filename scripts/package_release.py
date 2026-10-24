@@ -23,14 +23,19 @@ def main():
     core = (ROOT / 'extension/core.js').read_text(encoding='utf-8')
     if "export const VERSION = '" + version + "';" not in core:
         raise SystemExit('Core version does not match the extension version.')
+    for name in ['Code.gs', 'Protocol.gs', 'appsscript.json']:
+        if (ROOT / 'extension/setup' / name).read_bytes() != (ROOT / 'gas' / name).read_bytes():
+            raise SystemExit('Bundled GAS code is stale. Run python scripts/sync_gas_protocol.py.')
     paths = [ROOT / name for name in ['README.md', 'README_ja.md', 'VALIDATION.md', 'RELEASE_NOTES.md', 'package.json']]
-    for directory in ['extension', 'windows', 'tests', 'scripts', 'gas']:
+    for directory in ['extension', 'windows', 'tests', 'scripts', 'gas', 'design']:
         paths.extend(p for p in (ROOT / directory).rglob('*') if p.is_file() and '__pycache__' not in p.parts)
     payloads = {}
     for path in sorted(paths):
         name = path.relative_to(ROOT).as_posix()
         # Windows checkout line endings must not change release checksums.
-        content = path.read_bytes().replace(b'\r\n', b'\n')
+        content = path.read_bytes()
+        if path.suffix.lower() in {'.md', '.json', '.js', '.mjs', '.gs', '.css', '.html', '.ps1', '.py', '.svg', '.txt'}:
+            content = content.replace(b'\r\n', b'\n')
         payloads[name] = content
     hashes = ''.join(hashlib.sha256(content).hexdigest() + '  ' + name + '\n' for name, content in sorted(payloads.items()))
     payloads['SHA256SUMS.txt'] = hashes.encode('utf-8')

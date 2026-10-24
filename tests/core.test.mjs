@@ -64,7 +64,7 @@ test('configuration bounds and UA scope prevent host-wide header mutation',()=>{
   assert.equal(validContact('https://github.com/Xenoah'),true);assert.equal(validContact('abc\r\nHeader:value'),false);
   const rule=userAgentRule('abcdefghijklmnop','Chrome/test','https://github.com/example');
   assert.deepEqual(rule.condition.initiatorDomains,['abcdefghijklmnop']);
-  assert.equal(rule.condition.urlFilter,'|https://vrchat.com/api/1/');assert.match(rule.action.requestHeaders[0].value,/VRCFriendsObserver\/0.2.0/);
+  assert.equal(rule.condition.urlFilter,'|https://vrchat.com/api/1/');assert.match(rule.action.requestHeaders[0].value,/VRCFriendsObserver\/0.2.1/);
 });
 test('manifest permissions are bounded and code does not accept arbitrary URLs or messages from websites',()=>{
   const m=JSON.parse(fs.readFileSync(new URL('../extension/manifest.json',import.meta.url)));

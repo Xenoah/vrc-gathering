@@ -1,6 +1,6 @@
 # Googleスプレッドシート同期の導入
 
-このフォルダーの `Code.gs` と `Protocol.gs` をGoogle Apps Script（GAS）に配置します。既存のVRChat認証はそのままChromeで扱い、GASへは観測済みの記録だけを送ります。同期を有効にするまでは外部送信しません。
+このフォルダーの `Code.gs` と `Protocol.gs` をGoogle Apps Script（GAS）に配置します。拡張内の「収集設定」または「使い方」→「GASセットアップ手順を見る」でも同じ流れを確認でき、必要なコードをコピー・保存できます。既存のVRChat認証はそのままChromeで扱い、GASへは観測済みの記録だけを送ります。同期を有効にするまでは外部送信しません。
 
 ## 1. スプレッドシートとGASを作る
 

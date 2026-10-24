@@ -1,4 +1,4 @@
-# VRC Friends Observer v0.2.0
+# VRC Friends Observer v0.2.1
 
 自分のVRChatアカウントに公開されているフレンドの接続状態・ワールド・インスタンスを定期取得し、PC内へ記録するChrome拡張です。**ローカル利用時はコンパイル・Node.js・Python・外部サーバーは不要**です。Googleスプレッドシート同期を使う場合は、同梱手順でGASを公開します。
 
@@ -73,7 +73,7 @@ powershell.exe -NoProfile -File ".\windows\Remove-Startup.ps1"
 
 ## Googleスプレッドシートとの同期
 
-[gas/README.md](gas/README.md) の手順でスプレッドシートとGASを新規作成し、「収集設定 → Googleスプレッドシート同期」にURLと同期キーを保存します。同期は任意です。収集後・画面表示時・約5分ごとに差分を送受信し、「今すぐ同期」でも更新できます。
+拡張の「収集設定」または「使い方」から「GASセットアップ手順を見る」を開きます。6ステップのガイドに沿ってスプレッドシートとGASを新規作成し、「収集設定 → Googleスプレッドシート同期」にURLと同期キーを保存します。ガイド内から `Code.gs` と `Protocol.gs` をコピー・保存できます。詳しい補足は [gas/README.md](gas/README.md) にもあります。同期は任意です。収集後・画面表示時・約5分ごとに差分を送受信し、「今すぐ同期」でも更新できます。
 
 全アカウントの観測データを同期します。VRChatの認証情報とAPI連絡先は同期しません。通信エラー時はローカルの記録を表示し、待機後に再試行します。クラウドと端末の保存期間は独立しています。端末内の記録削除はクラウドには伝わらず、同期を再開するとクラウドに残った記録が戻ります。
 
@@ -136,7 +136,7 @@ Chrome拡張の削除・プロファイル削除でデータが消えるため�
 | script.google.com / script.googleusercontent.com（任意） | GASの同期設定を保存するときに追加で要求する送受信権限 |
 | declarativeNetRequestWithHostAccess | **この拡張自身のvrchat.com APIへのGETだけ**に識別用User-Agentを設定 |
 
-User-Agentはブラウザ本来の識別子を維持し、その末尾に `VRCFriendsObserver/0.2.0 連絡先` を明示します。VRChatサイトや他の拡張からの要求は書き換えません。VRChatは非公式API利用をサポートしておらず、User-Agentへの付加形式も個別承認を受けたものではありません。APIが転送を返した場合は追従せず停止します。
+User-Agentはブラウザ本来の識別子を維持し、その末尾に `VRCFriendsObserver/0.2.1 連絡先` を明示します。VRChatサイトや他の拡張からの要求は書き換えません。VRChatは非公式API利用をサポートしておらず、User-Agentへの付加形式も個別承認を受けたものではありません。APIが転送を返した場合は追従せず停止します。
 
 ## 検証状況
 
