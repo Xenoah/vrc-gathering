@@ -110,6 +110,104 @@ function render() {
   $('refresh').disabled = isDemo || !config.enabled || state.phase === 'running' || state.cooldownUntil > Date.now();
   for(const id of ['exportCSV','exportJSON','exportEvents']) $(id).disabled = !selectedAccount;
 }
+function renderHome() {
+  const fresh=data.friends.filter(f=>f.isFriend && !stale(f));
+  const live=fresh.filter(f=>f.presence==='online').length;
+  const ranked=rankWorlds(data.friends,data.worlds,{pollSeconds:config.pollSeconds});
+  const title='ゲーム内 '+live+'人 / ワールド公開 '+ranked.reduce((n,w)=>n+w.count,0)+'人 / 最新観測ワールド '+ranked.length+'件。';
+  $('homeSummary').textContent=title+' 数値は自分が観測できたフレンドのみの集計です。';
+  renderHistory($('homeRecent'),data.events.slice(0,5));
+  const holder=$('homeWorlds');holder.replaceChildren();
+  if (!ranked.length) {
+    holder.append(node('p','最新の公開ワールド情報はありません。','activity-empty')); return;
+  }
+  for (const item of ranked.slice(0,8)) {
+    const row=node('div',null,'home-world-row');
+    const link=node('a',item.name);link.href='https://vrchat.com/home/world/'+encodeURIComponent(item.id);
+    link.rel='noreferrer';link.target='_blank';
+    const name=node('strong');name.append(link);
+    row.append(name,node('small',String(item.count)+'人 / '+String(item.instances)+'インスタンス'));
+    holder.append(row);
+  }
+}
+const activityAxisFormat=new Intl.DateTimeFormat('ja-JP',{
+  timeZone:'Asia/Tokyo',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false
+});
+function renderActivity() {
+  const hours=Number($('activityRange').value)||24;
+  const timeline=buildActivityTimeline(data.friends,data.journeyEvents||data.events,data.worlds,{
+    now:Date.now(),rangeMs:hours*3600000,filter:$('activityFilter').value,
+    query:$('activitySearch').value,pollSeconds:config.pollSeconds,limit:120
+  });
+  const runs=(data.runs||[]).filter(r=>r.observedAt>=timeline.start && r.observedAt<=timeline.end);
+  $('activitySummary').textContent=String(timeline.total)+'ユーザー / 表示 '+String(timeline.rows.length)+
+    '人 / 成功した収集 '+String(runs.length)+'回（表示期間）。'+
+    (timeline.truncated?'先頭120人を表示。検索で絞り込めます。':'')+
+    ' 最後の観測より後は塗りません。';
+  const graph=$('activityTimeline');graph.replaceChildren();
+  const axis=node('div',null,'activity-axis'),side=node('div',null,'activity-axis-label');
+  side.append(node('span','ユーザー'),node('span','t →','axis-t'));
+  const ruler=node('div',null,'activity-axis-track');
+  for(let i=0;i<=4;i++){
+    const tick=node('span',activityAxisFormat.format(timeline.start+(timeline.end-timeline.start)*i/4),'activity-axis-tick');
+    tick.style.left=String(i*25)+'%';
+    ruler.append(tick);
+  }
+  axis.append(side,ruler);graph.append(axis);
+  const scale=100/(timeline.end-timeline.start);
+  for(const item of timeline.rows) {
+    const row=node('div',null,'activity-row'),left=node('div',null,'activity-user'),track=node('div',null,'activity-track');
+    const button=node('button'),label=node('span',null,'activity-user-text');
+    const duration=observedDurations(item.friend);
+    label.append(node('strong',item.name),
+      node('small',duration ? '状態 '+formatObservedDuration(duration.presence)+'（最終観測まで）' : '履歴のみ'));
+    button.append(avatar('user',item.id,item.name),label);
+    button.disabled=!item.friend;
+    if(item.friend)button.addEventListener('click',()=>showDetail(item.friend));
+    left.append(button);
+    for(const segment of item.segments) {
+      const bar=node('button',null,'activity-segment state-'+segment.kind+' '+segment.confidence);
+      bar.type='button';
+      bar.style.left=String((segment.start-timeline.start)*scale)+'%';
+      bar.style.width=String(Math.max(.12,(segment.end-segment.start)*scale))+'%';
+      const world=segment.worldId ? ' / '+(timeline.worldNames.get(segment.worldId)||segment.worldId) : '';
+      const note=segment.confidence==='estimated'?'推定区間（途中の状態は未確認）':'近接する同状態の観測点間';
+      const description=(ACTIVITY_LABELS[segment.kind]||segment.kind)+world+' / '+
+        date(segment.start)+' ～ '+date(segment.end)+' / '+note;
+      bar.title=description;bar.setAttribute('aria-label',item.name+'：'+description);
+      bar.disabled=!item.friend;
+      if(item.friend)bar.addEventListener('click',()=>showDetail(item.friend));
+      track.append(bar);
+    }
+    const pts=item.points.length>180
+      ? item.points.filter((p,i)=>i===0||i===item.points.length-1||i%Math.ceil(item.points.length/180)===0)
+      : item.points;
+    for(const point of pts){
+      const mark=node('span',null,'activity-mark');
+      mark.style.left=String((point.at-timeline.start)*scale)+'%';
+      mark.title='観測：'+date(point.at)+' / '+(ACTIVITY_LABELS[
+        point.state.isFriend===false?'removed':
+        point.state.presence==='online'?(point.state.location?.kind==='world'?'world':point.state.location?.kind==='private'?'private':'online-unknown'):
+        point.state.presence==='active'?'active':point.state.presence==='offline'?'offline':'unknown'] || '不明');
+      track.append(mark);
+    }
+    row.append(left,track);graph.append(row);
+  }
+  if (!timeline.rows.length)graph.append(node('p','この期間・検索条件に該当する観測がありません。','activity-empty'));
+  const counts=changesByHour(data.journeyEvents||data.events,timeline.start),max=Math.max(1,...counts);
+  const histogram=$('activityHourly');histogram.replaceChildren();
+  histogram.setAttribute('aria-label','時間帯ごとの状態変更イベント数：'+counts.map((c,i)=>String(i)+'時 '+String(c)+'件').join('、'));
+  for(let i=0;i<24;i++){
+    const slot=node('div',null,'hour-slot');
+    const bar=node('div',null,'hour-bar');
+    bar.style.height=String(Math.max(1,Math.round(counts[i]/max*115)))+'px';
+    const title=String(i)+'時台：'+String(counts[i])+'件';
+    slot.title=title;bar.title=title;
+    slot.append(bar,node('span',String(i).padStart(2,'0'),'hour-label'));
+    histogram.append(slot);
+  }
+}
+
 function renderInsights() {
   const ranked = rankWorlds(data.friends, data.worlds, {pollSeconds:config.pollSeconds});
   const ranking = $('worldRanking'); ranking.replaceChildren();
@@ -289,6 +387,8 @@ async function exportData(kind){
 }
 document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab(b.dataset.tab);void syncView();}));
 document.querySelectorAll('[data-go-panel]').forEach(b=>b.addEventListener('click',()=>tab(b.dataset.goPanel)));
+for(const id of ['activityRange','activityFilter'])$(id).addEventListener('change',renderActivity);
+$('activitySearch').addEventListener('input',renderActivity);
 $('emptySettings').addEventListener('click',()=>tab('settings'));
 $('friendSort').addEventListener('change',render);$('rankingSort').addEventListener('change',renderInsights);
 $('search').addEventListener('input',render);$('filter').addEventListener('change',render);
