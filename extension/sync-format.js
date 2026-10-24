@@ -1,4 +1,6 @@
 // This protocol is also installed in Apps Script as gas/Protocol.gs.
+export const SYNC_PROTOCOL = 2;
+export const RECORD_SCHEMA = 2;
 export const SYNC_BATCH_SIZE = 100;
 export const SYNC_KINDS = ['friends', 'events', 'worlds', 'runs', 'accounts'];
 export function canonical(value) {
@@ -52,9 +54,43 @@ export function normalizeRecord(kind, input, now = Date.now()) {
     value = { accountId, observedAt, displayName: str(input.displayName,128) || accountId };
     key = accountId;
   }
-  return { kind, key: kind + ':' + accountId + ':' + key, value };
+  if (input.extensions != null) value.extensions = extensions(input.extensions);
+  return { kind, key: kind + ':' + accountId + ':' + key, schemaVersion:RECORD_SCHEMA, operation:'upsert', value };
 }
 export function newerRecord(next, previous) {
   return !previous || next.value.observedAt > previous.value.observedAt ||
     (next.value.observedAt === previous.value.observedAt && canonical(next.value) > canonical(previous.value));
+}
+
+// Extension namespaces are opt-in application data; raw API fields never flow into them.
+export function extensions(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw Error('SCHEMA');
+  function copy(value, depth) {
+    if (depth > 4) throw Error('SCHEMA');
+    if (value === null || typeof value === 'boolean' || typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value))) return value;
+    if (Array.isArray(value)) return value.map(v=>copy(v,depth+1));
+    if (!value || typeof value !== 'object') throw Error('SCHEMA');
+    const out={};
+    for (const [key,v] of Object.entries(value)) {
+      if (['__proto__','constructor','prototype'].includes(key) || key.length>100) throw Error('SCHEMA');
+      out[key]=copy(v,depth+1);
+    }
+    return out;
+  }
+  for (const key of Object.keys(input)) if (!/^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$/.test(key)) throw Error('SCHEMA');
+  const value=copy(input,0);
+  if (canonical(value).length>8000) throw Error('SCHEMA');
+  return value;
+}
+export function normalizeEnvelope(input, now = Date.now()) {
+  if (!input || !SYNC_KINDS.includes(input.kind) || ![1,2].includes(input.schemaVersion ?? 1) || (input.operation ?? 'upsert') !== 'upsert') throw Error('SCHEMA');
+  const record=normalizeRecord(input.kind,input.value,now);
+  if (input.key != null && input.key !== record.key) throw Error('SCHEMA');
+  return record;
+}
+export function mergeRecord(next, previous) {
+  if (!previous) return next;
+  const newer=newerRecord(next,previous), winner=newer?next:previous, other=newer?previous:next;
+  const extra={...other.value.extensions,...winner.value.extensions};
+  return Object.keys(extra).length ? {...winner,value:{...winner.value,extensions:extensions(extra)}} : winner;
 }

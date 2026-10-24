@@ -1,10 +1,11 @@
-import { normalizeRecord, newerRecord } from './sync-format.js';
+import { normalizeRecord, mergeRecord, canonical } from './sync-format.js';
 let opening;
 export function db() {
   if (!opening) opening = new Promise((resolve, reject) => {
-    const req = indexedDB.open('vrc-friends-observer', 1);
-    req.onupgradeneeded = () => {
+    const req = indexedDB.open('vrc-friends-observer', 2);
+    req.onupgradeneeded = event => {
       const d = req.result;
+      if (event.oldVersion < 1) {
       const friends = d.createObjectStore('friends', { keyPath: ['accountId', 'id'] });
       friends.createIndex('account', 'accountId');
       friends.createIndex('observed', 'observedAt');
@@ -17,6 +18,11 @@ export function db() {
       const runs = d.createObjectStore('runs', { keyPath: 'key', autoIncrement: true });
       runs.createIndex('accountTime', ['accountId', 'observedAt']);
       runs.createIndex('observed', 'observedAt');
+      }
+      if (event.oldVersion < 2) {
+        const images = d.createObjectStore('imageCache', {keyPath:'key'});
+        images.createIndex('account', 'accountId');
+      }
     };
     req.onsuccess = () => { req.result.onversionchange = () => { req.result.close(); opening = null; }; resolve(req.result); };
     req.onerror = () => { opening = null; reject(req.error); };
@@ -59,10 +65,11 @@ export async function mergeSyncRecords(records) {
     const maps = new Map(names.map((name, i) => [name, new Map(values[i].map(value => {
       const record = normalizeRecord(name, value); return [record.key, {record, localKey: value.key}];
     }))]));
-    for (const record of records) {
+    for (let record of records) {
       if (!maps.has(record.kind)) continue;
       const map = maps.get(record.kind), old = map.get(record.key);
-      if (!newerRecord(record, old?.record)) continue;
+      record = mergeRecord(record, old?.record);
+      if (old && canonical(record.value) === canonical(old.record.value)) continue;
       const value = {...record.value};
       if (old?.localKey != null) value.key = old.localKey;
       const request = tx.objectStore(record.kind).put(value);
@@ -90,9 +97,9 @@ export async function prune(retentionDays, now = Date.now()) {
   await done;
 }
 export async function clearAll() {
-  const d = await db(), tx = d.transaction(['friends', 'events', 'worlds', 'runs'], 'readwrite');
+  const d = await db(), tx = d.transaction(['friends', 'events', 'worlds', 'runs', 'imageCache'], 'readwrite');
   const done = complete(tx);
-  for (const name of ['friends', 'events', 'worlds', 'runs']) tx.objectStore(name).clear();
+  for (const name of ['friends', 'events', 'worlds', 'runs', 'imageCache']) tx.objectStore(name).clear();
   await done;
 }
 export async function exportAccount(accountId) {
@@ -101,4 +108,35 @@ export async function exportAccount(accountId) {
   const requests = ['friends', 'events', 'worlds', 'runs'].map(name => result(tx.objectStore(name).index(name === 'friends' || name === 'worlds' ? 'account' : 'accountTime').getAll(name === 'friends' || name === 'worlds' ? accountId : range)));
   const [friends, events, worlds, runs] = await Promise.all(requests);
   return { schema: 1, exportedAt: new Date().toISOString(), accountId, friends, events, worlds, runs };
+}
+
+// Images and source URLs stay in this store; export/sync only use the four observation stores above.
+export async function enqueueImages(accountId, candidates, now = Date.now()) {
+  const d=await db(),tx=d.transaction('imageCache','readwrite'),done=complete(tx),store=tx.objectStore('imageCache');
+  for(const candidate of candidates.filter(Boolean)) {
+    const key=accountId+':'+candidate.kind+':'+candidate.id;
+    const existing=await result(store.get(key));
+    store.put({...existing,...candidate,key,accountId,lastSeenAt:now,...(existing?.url!==candidate.url?{retryAt:0,failures:0}:{})});
+  }
+  await done;
+}
+export async function cachedImages(accountId) {
+  const d=await db(),store=d.transaction('imageCache').objectStore('imageCache');
+  return result(accountId?store.index('account').getAll(accountId):store.getAll());
+}
+export async function updateCachedImage(key, update) {
+  const d=await db(),tx=d.transaction('imageCache','readwrite'),done=complete(tx),store=tx.objectStore('imageCache');
+  const value=update(await result(store.get(key)));
+  if(value)store.put(value);
+  await done;
+}
+export async function clearImageCache() {
+  const d=await db(),tx=d.transaction('imageCache','readwrite'),done=complete(tx);tx.objectStore('imageCache').clear();await done;
+}
+export async function trimImageCache(maxBytes,maxCount,cutoff) {
+  const d=await db(),tx=d.transaction('imageCache','readwrite'),done=complete(tx),store=tx.objectStore('imageCache');
+  const rows=(await result(store.getAll())).sort((a,b)=>(b.lastSeenAt||0)-(a.lastSeenAt||0));
+  let bytes=0,count=0;
+  for(const row of rows){if((row.lastSeenAt||0)<cutoff || count>=maxCount || bytes+(row.bytes||0)>maxBytes){store.delete(row.key);continue;}bytes+=row.bytes||0;count++;}
+  await done;
 }

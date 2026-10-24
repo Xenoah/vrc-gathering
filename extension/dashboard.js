@@ -1,7 +1,9 @@
 import { DEFAULTS, csv, VERSION } from './core.js';
-import { exportAccount } from './db.js';
+import { exportAccount, cachedImages } from './db.js';
 import { demoData } from './demo.js';
-import { rankWorlds, worldJourney } from './insights.js';
+import { rankWorlds, worldJourney, worldNetwork, sortFriends, sortWorlds } from './insights.js';
+import { createNetworkView } from './network-view.js';
+import { IMAGE_ORIGINS } from './image-cache.js';
 import { initializeGasGuide } from './setup-guide.js';
 
 const $ = id => document.getElementById(id), isDemo = new URLSearchParams(location.search).get('demo') === '1';
@@ -11,9 +13,22 @@ const iso = v => v ? new Date(v).toISOString() : '';
 const presenceNames = { online:'ゲーム内', active:'Web／アプリ', offline:'オフライン', unknown:'不明' };
 const statusNames = { active:'オンライン', 'join me':'Join Me', 'ask me':'Ask Me', busy:'取り込み中', offline:'オフライン' };
 const accessNames = { public:'Public', friends:'Friends', 'friends-plus':'Friends+', invite:'Invite', 'invite-plus':'Invite+', 'group-public':'Group Public', 'group-plus':'Group+', 'group-members':'Group', 'group-unknown':'Group', unknown:'不明' };
-let data = { friends:[], events:[], worlds:[] }, config = { ...DEFAULTS }, state = {}, selectedAccount = '', dirty = false, renderTimer, loaded = false, cloudConfig = {}, cloudState = {}, syncDirty = false;
+let data = { friends:[], events:[], worlds:[] }, config = { ...DEFAULTS }, state = {}, selectedAccount = '', dirty = false, renderTimer, loaded = false, cloudConfig = {}, cloudState = {}, syncDirty = false, imageDirty = false, imageConfig = {}, imageRows = [], imageRevision = null, loadedImageRevision;
 const demo = isDemo ? demoData() : null;
 function node(tag, content, className) { const el = document.createElement(tag); if (content != null) el.textContent = content; if (className) el.className = className; return el; }
+const imageURLs=new Map(),imageElements=new Map();let currentGraph;
+const network=createNetworkView({viewport:$('networkViewport'),stage:$('networkStage'),canvas:$('networkCanvas'),zoomLabel:$('networkZoom'),onSelect:showNetworkDetail,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
+function avatar(kind,id,name) {
+  const url=imageURLs.get(kind+':'+id);
+  if(!url)return node('span',[...name||'?'][0],'avatar');
+  const img=node('img',null,'avatar cached-avatar');img.src=url;img.alt='';img.width=36;img.height=36;img.loading='lazy';return img;
+}
+async function loadImages() {
+  const revision=selectedAccount+':'+JSON.stringify(imageRevision);if(revision===loadedImageRevision)return;
+  for(const url of imageURLs.values())URL.revokeObjectURL(url);imageURLs.clear();imageElements.clear();
+  imageRows=isDemo||!selectedAccount?[]:await cachedImages(selectedAccount);loadedImageRevision=revision;
+  for(const row of imageRows){if(!row.blob)continue;const key=row.kind+':'+row.id,url=URL.createObjectURL(row.blob);imageURLs.set(key,url);const img=new Image();img.onload=()=>network.redraw();img.src=url;imageElements.set(key,img);}
+}
 function pill(label, cls = '') { return node('span', label, 'pill ' + cls); }
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(renderTimer); renderTimer = setTimeout(() => { $('toast').hidden = true; }, 6000); }
 async function send(message) {
@@ -38,13 +53,13 @@ function render() {
   $('private').textContent = fresh.filter(f => f.location.kind === 'private').length.toLocaleString();
   $('stale').textContent = active.filter(stale).length.toLocaleString();
   const q = $('search').value.trim().toLocaleLowerCase(), filter = $('filter').value;
-  const rows = data.friends.filter(f => {
+  const rows = sortFriends(data.friends.filter(f => {
     if (filter === 'removed' ? f.isFriend : !f.isFriend) return false;
     if (filter === 'stale' && !stale(f)) return false;
     if (filter === 'private' && f.location.kind !== 'private') return false;
     if (['online','active','offline'].includes(filter) && f.presence !== filter) return false;
     return !q || [f.displayName, f.id, place(f), f.statusDescription, f.location.instanceId].join(' ').toLocaleLowerCase().includes(q);
-  }).sort((a,b) => ({online:0,active:1,unknown:2,offline:3}[a.presence] ?? 2) - ({online:0,active:1,unknown:2,offline:3}[b.presence] ?? 2) || a.displayName.localeCompare(b.displayName,'ja'));
+  }), $('friendSort').value, new Map(data.worlds.map(w=>[w.id,w.name])));
   $('count').textContent = `${rows.length.toLocaleString()} 件`;
   $('empty').hidden = !!data.friends.length;
   const body = $('friendsBody'); body.replaceChildren();
@@ -52,8 +67,8 @@ function render() {
   for (const f of rows.slice(0,1000)) {
     const tr = node('tr'); tr.tabIndex = 0; tr.setAttribute('aria-label', `${f.displayName}の詳細`);
     tr.addEventListener('click', () => showDetail(f)); tr.addEventListener('keydown', e => { if(e.key === 'Enter') showDetail(f); });
-    const nameCell = node('td'), wrap = node('div', null, 'friend-name'), avatar = node('span', [...f.displayName][0], 'avatar'), names = node('div');
-    names.append(node('strong', f.displayName), node('span', f.platform || 'プラットフォーム未確認', 'sub')); wrap.append(avatar,names); nameCell.append(wrap);
+    const nameCell = node('td'), wrap = node('div', null, 'friend-name'), icon = avatar('user',f.id,f.displayName), names = node('div');
+    names.append(node('strong', f.displayName), node('span', f.platform || 'プラットフォーム未確認', 'sub')); wrap.append(icon,names); nameCell.append(wrap);
     const statusCell = node('td'); statusCell.append(pill(presenceNames[f.presence] || '不明', f.presence));
     statusCell.append(node('span', f.status ? statusNames[f.status] || f.status : '', 'sub'));
     const placeCell = node('td'); placeCell.append(node('span', place(f), 'world-name'), node('span', shortId(f.location.instanceId,38), 'sub'));
@@ -80,9 +95,9 @@ function renderInsights() {
   const ranking = $('worldRanking'); ranking.replaceChildren();
   $('rankingCount').textContent = `${ranked.length} ワールド / ${ranked.reduce((n,w)=>n+w.count,0)} 人`;
   if(!ranked.length) ranking.append(node('p','現在集計できるワールドはありません。収集・同期を行い、新しい観測を取得してください。','empty muted'));
-  for(const world of ranked) {
+  for(const world of sortWorlds(ranked,$('rankingSort').value)) {
     const card=node('article',null,'world-card'), number=node('div',String(world.rank),'world-rank'), body=node('div'), heading=node('h3');
-    const link=node('a',world.name); link.href='https://vrchat.com/home/world/'+encodeURIComponent(world.id);link.target='_blank';link.rel='noreferrer';heading.append(link);
+    const link=node('a',world.name); link.href='https://vrchat.com/home/world/'+encodeURIComponent(world.id);link.target='_blank';link.rel='noreferrer';heading.append(avatar('world',world.id,world.name),link);
     body.append(heading,node('span',`${world.instances} インスタンス · 最新観測 ${date(world.observedAt)}`,'muted'));
     const users=node('div',null,'world-users');
     for(const f of world.users){const button=node('button',f.displayName);button.addEventListener('click',()=>showDetail(f));users.append(button);}
@@ -92,15 +107,46 @@ function renderInsights() {
   }
   const previous=$('journeyUser').value, people=new Map(data.friends.map(f=>[f.id,f.displayName]));
   for(const e of data.journeyEvents || data.events) if(!people.has(e.userId))people.set(e.userId,e.displayName);
-  $('journeyUser').replaceChildren(...[...people].sort((a,b)=>a[1].localeCompare(b[1],'ja')).map(([id,name])=>new Option(name,id)));
-  if(people.has(previous))$('journeyUser').value=previous;
+  $('journeyUser').replaceChildren(new Option('全ユーザー',''),...[...people].sort((a,b)=>a[1].localeCompare(b[1],'ja')).map(([id,name])=>new Option(name,id)));
+  if(!previous||people.has(previous))$('journeyUser').value=previous;
   renderJourney();
 }
 function renderJourney() {
+  const days=Number($('journeyRange').value),userId=$('journeyUser').value;
+  currentGraph=worldNetwork(data.journeyEvents||data.events,data.friends,data.worlds,{since:days?Date.now()-days*86400000:0,userId,query:$('networkSearch').value,order:$('networkSort').value,pollSeconds:config.pollSeconds});
+  network.setGraph(currentGraph,[selectedAccount,userId,days,$('networkSearch').value,$('networkSort').value].join('|'));
+  $('journeySummary').textContent=`${currentGraph.userCount} ユーザー / ${currentGraph.nodes.filter(n=>n.kind==='world').length} ワールド / ${currentGraph.edges.length} 経路 / ${currentGraph.transitionCount} 回の移動観測。${currentGraph.nodes.length?'中央から配置順に並べています。':'この条件の記録はありません。'}`;
+  const oldNode=$('networkNode').value,oldEdge=$('networkEdge').value;
+  $('networkNode').replaceChildren(new Option('地点を選択',''),...currentGraph.nodes.map(n=>new Option(`${n.name} · ${n.users.size}人`,n.id)));
+  const names=new Map(currentGraph.nodes.map(n=>[n.id,n.name]));
+  $('networkEdge').replaceChildren(new Option('移動を選択',''),...currentGraph.edges.map(e=>new Option(`${names.get(e.from)} → ${names.get(e.to)} · ${e.count}回`,e.id)));
+  if(currentGraph.nodes.some(n=>n.id===oldNode))$('networkNode').value=oldNode;
+  if(currentGraph.edges.some(e=>e.id===oldEdge))$('networkEdge').value=oldEdge;
+  const selected=currentGraph.nodes.find(n=>n.id===$('networkNode').value)||currentGraph.edges.find(e=>e.id===$('networkEdge').value);if(selected)showNetworkDetail(selected);
+  $('individualJourney').hidden=!userId;
+  renderIndividualJourney();
+}
+function showNetworkDetail(item) {
+  const detail=$('networkDetail');detail.replaceChildren();
+  if(!item){detail.textContent='点または線を選ぶと、ユーザーと観測日時を表示します。';return;}
+  if(item.transitions){
+    $('networkEdge').value=item.id;$('networkNode').value='';
+    const names=new Map(currentGraph.nodes.map(n=>[n.id,n.name]));detail.append(node('h3',`${names.get(item.from)} → ${names.get(item.to)}（${item.count}回 / ${item.users.size}人）`));
+    const rows=[...item.transitions].sort((a,b)=>b.observedAt-a.observedAt);let shown=0;
+    const list=node('ol',null,'network-events'),more=node('button','さらに100件表示');
+    function append(){for(const t of rows.slice(shown,shown+100)){const li=node('li');li.append(avatar('user',t.userId,t.displayName),node('strong',t.displayName),node('span',`${date(t.previousAt)} → ${date(t.observedAt)}`),node('small',`${t.fromInstance||'—'} → ${t.toInstance||'—'}`));list.append(li);}shown+=100;more.hidden=shown>=rows.length;}
+    more.addEventListener('click',append);append();detail.append(list,more);
+  }else{
+    $('networkNode').value=item.id;$('networkEdge').value='';
+    const heading=node('h3');heading.append(avatar('world',item.id,item.name),node('span',item.name));detail.append(heading,node('p',`${item.users.size}人を観測 · 現在の滞在 ${item.currentUsers.size}人 · 最新 ${date(item.observedAt)}`));
+    const users=node('div',null,'world-users');for(const id of item.users){const name=currentGraph.people.get(id)||id,button=node('button',name);button.addEventListener('click',()=>{$('journeyUser').value=id;renderJourney();});users.append(button);}detail.append(users);
+  }
+}
+function renderIndividualJourney() {
   const days=Number($('journeyRange').value), userId=$('journeyUser').value;
-  const journey=worldJourney(data.journeyEvents || data.events,userId,{since:days ? Date.now()-days*86400000 : 0});
+  const journey=worldJourney(data.journeyEvents || data.events,userId,{since:days ? Date.now()-days*86400000 : 0,limit:200});
   const flow=$('journeyFlow');flow.replaceChildren();
-  $('journeySummary').textContent=journey.nodes.length ? `${journey.total} 地点の観測${journey.truncated?'（最新200地点を表示）':''}。左から右へ観測順に表示します。` : 'この期間の遷移記録はありません。フレンドと期間を選択してください。';
+
   const labels={private:'所在非公開',offline:'オフライン',traveling:'移動中',web:'Web／アプリ',unknown:'所在不明',removed:'名簿から消失'};
   for(const point of journey.nodes){
     const item=node('li',null,point.kind), time=node('time',date(point.observedAt));time.dateTime=new Date(point.observedAt).toISOString();
@@ -136,7 +182,7 @@ function renderHistory(container, events) {
   }
 }
 function showDetail(f) {
-  $('detailName').textContent=f.displayName;
+  $('detailName').replaceChildren(avatar('user',f.id,f.displayName),document.createTextNode(f.displayName));
   const fields=$('detailFields');fields.replaceChildren();
   const w=data.worlds.find(w=>w.id===f.location.worldId);
   const values=[['ユーザーID',f.id],['観測日時',date(f.observedAt)+(stale(f)?'（古い観測）':'')],['名前・状態文の取得',date(f.profileObservedAt)],['接続状態',presenceNames[f.presence]],['ステータス',statusNames[f.status]||f.status||'—'],['メッセージ',f.statusDescription||'—'],['プラットフォーム',f.platform||'—'],['ワールド',place(f)],['ワールドID',f.location.worldId||'—'],['インスタンスID',f.location.instanceId||'—'],['種類',accessNames[f.location.access]||f.location.access||'—'],['地域',f.location.region||'—'],['ワールド作者',w?.authorName||'未取得'],['ワールド定員',w?.capacity??'未取得'],['定員の取得日時',date(w?.observedAt)],['初回観測',date(f.firstObservedAt)],['現在の状態の初回観測',date(f.stateFirstObservedAt)]];
@@ -152,7 +198,7 @@ async function load() {
   if(isDemo){ data=demo;state=demo.state;config={...DEFAULTS,enabled:true};selectedAccount=demo.accountId;
     $('account').replaceChildren(new Option('デモアカウント',demo.accountId));$('demoFlag').hidden=false;
   } else {
-    const saved=await chrome.storage.local.get(['settings','state','accountMeta','cloudSync','cloudState']);cloudConfig=saved.cloudSync||{};cloudState=saved.cloudState||{};config={...DEFAULTS,...saved.settings};state=saved.state||{};
+    const saved=await chrome.storage.local.get(['settings','state','accountMeta','cloudSync','cloudState','imageCacheSettings','imageCacheState']);imageConfig=saved.imageCacheSettings||{};imageRevision=saved.imageCacheState||{};cloudConfig=saved.cloudSync||{};cloudState=saved.cloudState||{};config={...DEFAULTS,...saved.settings};state=saved.state||{};
     const accounts=saved.accountMeta||{};
     if(!selectedAccount || !accounts[selectedAccount])selectedAccount=state.accountId||Object.keys(accounts)[0]||'';
     $('account').replaceChildren(...Object.entries(accounts).map(([id,meta])=>new Option(meta.displayName||id,id)));
@@ -160,6 +206,9 @@ async function load() {
     if(selectedAccount){const savedData=await exportAccount(selectedAccount);const events=savedData.events.sort((a,b)=>b.observedAt-a.observedAt);data={friends:savedData.friends,events:events.slice(0,200),journeyEvents:events,worlds:savedData.worlds,lastSuccessAt:accounts[selectedAccount]?.lastSuccessAt};}
     else data={friends:[],events:[],worlds:[]};
   }
+  await loadImages();
+  if(!imageDirty)$('imageEnabled').checked=imageConfig.enabled===true;
+  $('imageStatus').textContent=`表示中のアカウント：${imageRows.filter(r=>r.blob).length}枚 · ${(imageRows.reduce((n,r)=>n+(r.bytes||0),0)/1048576).toFixed(1)}MiB · 未取得 ${imageRows.filter(r=>!r.blob||r.cachedUrl!==r.url).length}件`;
   if(!dirty){for(const id of ['contact','pollSeconds','retentionDays','offlineRefreshMinutes'])$(id).value=String(config[id]);}
   if(!syncDirty){$('syncEnabled').checked=cloudConfig.enabled===true;$('syncEndpoint').value=cloudConfig.endpoint||'';}
   loaded=true;render();
@@ -185,6 +234,7 @@ async function exportData(kind){
 }
 document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab(b.dataset.tab);void syncView();}));
 $('emptySettings').addEventListener('click',()=>tab('settings'));
+$('friendSort').addEventListener('change',render);$('rankingSort').addEventListener('change',renderInsights);
 $('search').addEventListener('input',render);$('filter').addEventListener('change',render);
 $('account').addEventListener('change',()=>{selectedAccount=$('account').value;void reload().then(()=>syncView());});
 $('start').addEventListener('click',async()=>{if(await send({type:config.enabled?'PAUSE':'START'}))void reload();});
@@ -217,3 +267,13 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)void syncV
 window.addEventListener('focus',()=>void syncView());
 
 initializeGasGuide({showSettings:()=>tab('settings'),notify:toast});
+
+$('networkSort').addEventListener('change',renderJourney);$('networkSearch').addEventListener('input',renderJourney);
+$('zoomIn').addEventListener('click',()=>network.zoomBy(1.4));$('zoomOut').addEventListener('click',()=>network.zoomBy(1/1.4));
+$('fitNetwork').addEventListener('click',()=>network.fit());$('resetNetwork').addEventListener('click',()=>network.reset());
+$('networkNode').addEventListener('change',()=>network.focus($('networkNode').value));$('networkEdge').addEventListener('change',()=>network.focus($('networkEdge').value));
+$('imageForm').addEventListener('input',()=>{imageDirty=true;$('imageNotice').textContent='未保存';});
+$('imageForm').addEventListener('submit',async event=>{event.preventDefault();if(isDemo){toast('デモ画面では画像を取得しません。');return;}const enabled=$('imageEnabled').checked;
+  try{if(enabled&&!await chrome.permissions.request({origins:IMAGE_ORIGINS}))throw Error('画像取得の追加接続権限を許可してください。');if(await send({type:'SAVE_IMAGES',enabled})){imageDirty=false;$('imageNotice').textContent='保存しました。収集時に画像を順次取得します。';await reload();}}catch(error){toast(error.message);}
+});
+$('clearImages').addEventListener('click',async()=>{if(await send({type:'CLEAR_IMAGES'})){await reload();toast('画像キャッシュを削除しました。収集が有効なら次回以降に再取得します。');}});

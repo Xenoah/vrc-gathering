@@ -28,3 +28,32 @@ test('journey preserves world, privacy gaps and instance changes while collapsin
   assert.equal(worldJourney(d.events,'usr_missing0001').nodes.length,0);
   assert.equal(worldJourney(d.events,userId,{limit:2}).truncated,true);
 });
+
+test('network includes all users, keeps privacy states and same-world instance edges, and filters periods/users',async()=>{
+  const {worldNetwork}=await import('../extension/insights.js'),d=demoData();
+  const graph=worldNetwork(d.events,d.friends,d.worlds);assert.equal(graph.userCount,9);assert.equal(graph.transitionCount,6);
+  assert.equal(graph.nodes.filter(n=>n.kind==='world').length,3);assert.ok(graph.nodes.some(n=>n.id==='state:private'));
+  assert.equal(graph.edges.filter(e=>e.from==='wrld_democafe000000'&&e.to==='wrld_demoatelier000').flatMap(e=>e.transitions).filter(t=>t.userId===d.friends[0].id).length,0);
+  const single=worldNetwork(d.events,d.friends,d.worlds,{userId:d.friends[0].id});assert.equal(single.userCount,1);assert.equal(single.nodes.length,4);
+  const last=d.events.find(e=>e.userId===d.friends[0].id),changed={...last,observedAt:last.observedAt+1,previousObservedAt:last.observedAt,previous:last.current,current:{...last.current,location:{...last.current.location,instanceId:'different'}}};
+  const withLoop=worldNetwork([...d.events,changed],d.friends,d.worlds);assert.ok(withLoop.edges.some(e=>e.from===e.to&&e.transitions[0].toInstance==='different'));
+  assert.equal(worldNetwork(d.events,d.friends,d.worlds,{since:Date.now()+1}).nodes.length,0);
+  assert.equal(worldNetwork(d.events,[],d.worlds).userCount,9); // History-only users remain visible.
+  const filtered=worldNetwork(d.events,d.friends,d.worlds,{query:'展望台'});assert.equal(filtered.nodes.length,1);assert.equal(filtered.nodes[0].id,'wrld_demoobservatory');
+});
+test('network handles thousands of users without truncation and layout/sorting are deterministic',async()=>{
+  const {worldNetwork,sortFriends,sortWorlds}=await import('../extension/insights.js'),d=demoData(),sample=d.friends[0];
+  const friends=Array.from({length:3000},(_,i)=>({...sample,id:'usr_bulkuser'+i,location:{...sample.location,worldId:'wrld_bulkworld'+String(i).padStart(5,'0')}}));
+  const graph=worldNetwork([],friends,[]);assert.equal(graph.userCount,3000);assert.equal(graph.nodes.length,3000);assert.ok(graph.nodes.every(n=>n.x>=0&&n.y>=0&&n.x<=graph.width&&n.y<=graph.height));
+  assert.deepEqual(worldNetwork([],friends.toReversed(),[]).nodes.map(n=>[n.id,n.x,n.y]),graph.nodes.map(n=>[n.id,n.x,n.y]));
+  const ranked=rankWorlds(d.friends,d.worlds);assert.equal(sortWorlds(ranked,'name')[0].name,[...ranked].sort((a,b)=>a.name.localeCompare(b.name,'ja'))[0].name);
+  assert.equal(sortFriends(d.friends,'oldest')[0].displayName,'Haru');assert.equal(sortFriends(d.friends,'duration')[0].stateFirstObservedAt,Math.min(...d.friends.map(f=>f.stateFirstObservedAt)));
+  assert.deepEqual(sortFriends(d.friends,'name-desc').map(f=>f.id),sortFriends(d.friends,'name').toReversed().map(f=>f.id));
+});
+
+test('older previous snapshots from another device cannot reverse a user timeline',()=>{
+  const d=demoData(),first=d.events.find(e=>e.userId===d.friends[0].id),later={...first,observedAt:first.observedAt+1,previousObservedAt:first.observedAt-3600000,previous:{...first.current,location:location('wrld_democafe000000:old')},current:{...first.current,location:location('wrld_demoatelier000:new')}};
+  const journey=worldJourney([...d.events,later],first.userId);
+  assert.ok(journey.nodes.every((n,i)=>!i||n.observedAt>=journey.nodes[i-1].lastObservedAt));
+  assert.equal(journey.nodes.at(-1).worldId,'wrld_demoatelier000');
+});

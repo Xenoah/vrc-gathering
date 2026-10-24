@@ -1,5 +1,6 @@
 import { DEFAULTS, VERSION, settings, validContact, userAgentRule, currentUser, friend, rosterObservations, reconcile, retryDelay, jitter, world, WORLD_ID } from './core.js';
-import { list, commit, prune, clearAll, exportSyncRecords, mergeSyncRecords } from './db.js';
+import { list, commit, prune, clearAll, exportSyncRecords, mergeSyncRecords, enqueueImages, cachedImages, updateCachedImage, trimImageCache, clearImageCache } from './db.js';
+import { createImageCollector, imageCandidate, IMAGE_ORIGINS, IMAGE_CACHE_BYTES, IMAGE_CACHE_COUNT } from './image-cache.js';
 import { createSync, syncSettings, createAccountUpdater } from './sync.js';
 
 const updateAccounts = createAccountUpdater(chrome.storage.local);
@@ -10,6 +11,22 @@ const syncQuietly = () => cloud.sync().catch(() => {});
 const ALARM = 'vrc-observer-next', MAINTENANCE = 'vrc-observer-prune';
 const API = 'https://vrchat.com/api/1';
 let activeRun = null, controller = null;
+const IMAGE_ALARM='vrc-observer-images';
+const imageCollector=createImageCollector({store:{list:async()=>{const accountId=(await state()).accountId;return accountId?cachedImages(accountId):[];},update:updateCachedImage,trim:trimImageCache},
+  canRun:async()=>!activeRun && !((await state()).cooldownUntil>Date.now()) && (await configuration()).enabled && (await chrome.storage.local.get('imageCacheSettings')).imageCacheSettings?.enabled===true,
+  fetcher:async(url,options)=>{
+    const s=await state();if(s.cooldownUntil>Date.now())throw Error('API cooldown');
+    const delay=Math.max(0,(s.lastRequestAt||0)+2200-Date.now());if(delay)await sleep(delay,options.signal);
+    options.signal.throwIfAborted();await patchState({lastRequestAt:Date.now()});
+    const response=await fetch(url,options);
+    if(response.status===429){const s=await state();await patchState({cooldownUntil:Math.max(s.cooldownUntil||0,Date.now()+retryDelay(response.headers.get('Retry-After'),Date.now(),1))});}
+    return response;
+  }});
+async function cacheImagesQuietly(){
+  try{if(activeRun || !(await configuration()).enabled || !(await chrome.storage.local.get('imageCacheSettings')).imageCacheSettings?.enabled || !await chrome.permissions.contains({origins:IMAGE_ORIGINS}))return;
+    const result=await imageCollector.collect();if(!result.skipped)await chrome.storage.local.set({imageCacheState:result});
+  }catch{}
+}
 class ApiError extends Error {
   constructor(message, status = 0, retryAfter = null) { super(message); this.status = status; this.retryAfter = retryAfter; }
 }
@@ -27,7 +44,9 @@ const sleep = (ms, signal) => new Promise((resolve, reject) => {
   signal.addEventListener('abort', abort, { once: true });
 });
 async function ensureUA(config) {
-  await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [1], addRules: [userAgentRule(chrome.runtime.id, navigator.userAgent, config.contact)] });
+  const rule=userAgentRule(chrome.runtime.id,navigator.userAgent,config.contact),rules=[rule];
+  if(await chrome.permissions.contains({origins:['https://api.vrchat.cloud/*']}))rules.push({...rule,id:2,condition:{...rule.condition,urlFilter:'|https://api.vrchat.cloud/api/1/'}});
+  await chrome.declarativeNetRequest.updateDynamicRules({removeRuleIds:[1,2],addRules:rules});
 }
 async function request(path, signal, progress) {
   if (!(path === '/auth/user' || /^\/auth\/user\/friends\?n=100&offset=\d+&offline=(true|false)$/.test(path) || /^\/worlds\/wrld_[a-zA-Z0-9-]{8,64}$/.test(path))) throw new ApiError('許可されていないAPIパスです。');
@@ -63,7 +82,7 @@ async function identity(signal, label) {
   try { return currentUser(raw); } catch { throw new ApiError('ログインまたは2段階認証をvrchat.comで完了してください。', 401); }
 }
 async function pages(offline, offset, maximum, signal, me) {
-  const observations = [];
+  const observations = [], images = [];
   let complete = false;
   const active = new Set(me.activeFriends || []), online = new Set(me.onlineFriends || []);
   for (let p = 0; p < maximum; p++) {
@@ -75,12 +94,12 @@ async function pages(offline, offset, maximum, signal, me) {
       const fallback = offline ? 'offline' : online.has(item.id) ? 'online' : active.has(item.id) ? 'active' : 'online';
       const f = friend(item, observedAt, fallback);
       if (!f) throw new ApiError('不正なフレンドIDを受信しました。保存を中止しました。', 403);
-      observations.push(f);
+      observations.push(f);images.push(imageCandidate(item,'user'));
     }
     offset += raw.length;
     if (raw.length < 100) { complete = true; offset = 0; break; }
   }
-  return { observations, complete, nextOffset: offset };
+  return { observations, images, complete, nextOffset: offset };
 }
 async function collect(signal) {
   const config = await configuration(), before = await state();
@@ -99,11 +118,12 @@ async function collect(signal) {
     const allMeta = (await chrome.storage.local.get('accountMeta')).accountMeta || {};
     const meta = allMeta[accountId] || {};
     const onlinePage = await pages(false, meta.onlineOffset || 0, 20, signal, me);
+    const images=[...onlinePage.images];
     const observations = [...rosterObservations(me, previous, observedAt), ...onlinePage.observations];
     const nextMeta = { ...meta, displayName: me.displayName, onlineOffset: onlinePage.nextOffset };
     if (meta.offlineOffset || !meta.offlineCompletedAt || startedAt - meta.offlineCompletedAt > config.offlineRefreshMinutes * 60000) {
       const offlinePage = await pages(true, meta.offlineOffset || 0, 5, signal, me);
-      observations.push(...offlinePage.observations);
+      observations.push(...offlinePage.observations);images.push(...offlinePage.images);
       nextMeta.offlineOffset = offlinePage.nextOffset;
       if (offlinePage.complete) nextMeta.offlineCompletedAt = Date.now();
     }
@@ -112,7 +132,7 @@ async function collect(signal) {
     const pendingWorlds = worldIds.filter(id => !cached.has(id) || cached.get(id).retryAt < Date.now());
     const worlds = [];
     for (const id of pendingWorlds.slice(0, 5)) {
-      try { worlds.push(world(await request('/worlds/' + id, signal, 'ワールド名を取得中（最大5件／巡回）'), accountId, Date.now())); }
+      try { const raw=await request('/worlds/' + id, signal, 'ワールド名を取得中（最大5件／巡回）');worlds.push(world(raw,accountId,Date.now()));images.push(imageCandidate(raw,'world')); }
       catch (error) {
         if (error.status !== 404) throw error;
         worlds.push({ accountId, id, name: '', authorName: '', capacity: null, observedAt: Date.now(), retryAt: Date.now() + 86400000 });
@@ -129,6 +149,7 @@ async function collect(signal) {
       onlineOffset: nextMeta.onlineOffset, offlineOffset: nextMeta.offlineOffset || 0, observedCount: changes.records.length,
       changedCount: changes.events.length, worldNamesPending: Math.max(0, pendingWorlds.length - 5) };
     await commit(changes.records, changes.events, worlds, run);
+    if((await chrome.storage.local.get('imageCacheSettings')).imageCacheSettings?.enabled)await enqueueImages(accountId,images.filter(v=>v&&(v.kind==='world'||!roster||roster.has(v.id))),completedAt);
     nextMeta.lastSuccessAt = completedAt;
     await updateAccounts(accounts => ({...accounts, [accountId]:{...accounts[accountId], ...nextMeta}}));
     await prune(config.retentionDays);
@@ -160,18 +181,33 @@ async function collect(signal) {
 function run() {
   if (activeRun) return activeRun;
   controller = new AbortController();
-  activeRun = collect(controller.signal).catch(() => {}).finally(() => { activeRun = null; controller = null; });
+  activeRun = imageCollector.idle().then(()=>collect(controller.signal)).catch(() => {}).finally(() => { activeRun = null; controller = null; void cacheImagesQuietly(); });
   return activeRun;
 }
 async function pause() {
   await chrome.storage.local.set({ settings: { ...await configuration(), enabled: false } });
   controller?.abort();
+  await imageCollector.pause();
   if (activeRun) await activeRun;
+  imageCollector.resume();
   await chrome.alarms.clear(ALARM);
   await patchState({ phase: 'paused', message: '収集を停止しています。', nextRunAt: null });
   await chrome.action.setBadgeText({ text: '' });
 }
 async function command(message) {
+  if(message.type==='SAVE_IMAGES'){
+    const enabled=message.enabled===true;
+    if(enabled&&!await chrome.permissions.contains({origins:IMAGE_ORIGINS}))throw Error('画像取得の追加接続権限を許可してください。');
+    await chrome.storage.local.set({imageCacheSettings:{enabled}});
+    if(enabled){const config=await configuration();if(validContact(config.contact))await ensureUA(config);imageCollector.resume();await chrome.alarms.create(IMAGE_ALARM,{periodInMinutes:5});void cacheImagesQuietly();}
+    else{await imageCollector.pause();imageCollector.resume();await chrome.alarms.clear(IMAGE_ALARM);}
+    return {ok:true};
+  }
+  if(message.type==='CLEAR_IMAGES'){
+    await imageCollector.pause();
+    try{await clearImageCache();await chrome.storage.local.set({imageCacheState:{count:0,bytes:0,pending:0}});return {ok:true};}
+    finally{imageCollector.resume();}
+  }
   if (message.type === 'SYNC') { return {ok:true, ...await cloud.sync({force:message.force === true})}; }
   if (message.type === 'SAVE_SYNC') {
     await cloud.pause();
@@ -219,6 +255,8 @@ async function command(message) {
       await chrome.storage.local.set({cloudSync:{...cloudConfig,enabled:false},cloudState:{phase:'disabled',message:'ローカル記録の削除に伴い同期を停止しました。'},cloudCheckpoint:{cursor:0,receipts:{}}});
       await chrome.alarms.clear(CLOUD_ALARM);
       await clearAll();
+      await chrome.storage.local.set({imageCacheSettings:{enabled:false},imageCacheState:{count:0,bytes:0,pending:0}});
+      await chrome.alarms.clear(IMAGE_ALARM);
       const s = await state();
       // Clearing personal data must not clear server-imposed backoff or the rate-limit clock.
       await chrome.storage.local.set({ accountMeta: {}, state: { phase: 'paused', message: '保存データを削除しました。', cooldownUntil: s.cooldownUntil || 0,
@@ -241,8 +279,9 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 chrome.action.onClicked.addListener(() => { chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') }); });
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === ALARM) void run();
+  if (alarm.name === IMAGE_ALARM) void cacheImagesQuietly();
   if (alarm.name === CLOUD_ALARM) void syncQuietly();
-  if (alarm.name === MAINTENANCE) configuration().then(c => prune(c.retentionDays)).catch(() => {});
+  if (alarm.name === MAINTENANCE) configuration().then(c => Promise.all([prune(c.retentionDays),trimImageCache(IMAGE_CACHE_BYTES,IMAGE_CACHE_COUNT,Date.now()-30*86400000)])).catch(() => {});
 });
 async function boot() {
   await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
@@ -250,6 +289,7 @@ async function boot() {
   if ((await chrome.storage.local.get('cloudSync')).cloudSync?.enabled) {
     if (!await chrome.alarms.get(CLOUD_ALARM)) await chrome.alarms.create(CLOUD_ALARM,{periodInMinutes:5});
   }
+  if ((await chrome.storage.local.get('imageCacheSettings')).imageCacheSettings?.enabled && !await chrome.alarms.get(IMAGE_ALARM))await chrome.alarms.create(IMAGE_ALARM,{periodInMinutes:5});
   await prune(config.retentionDays);
   if (!await chrome.alarms.get(MAINTENANCE)) await chrome.alarms.create(MAINTENANCE, { delayInMinutes: 60 + Math.random() * 10, periodInMinutes: 60 });
   if (config.enabled && !await chrome.alarms.get(ALARM)) {

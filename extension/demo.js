@@ -20,6 +20,13 @@ export function demoData() {
   first.previous=history.at(-1).current;first.previousObservedAt=history.at(-1).observedAt;first.kind='changed';
   merged.records[0].firstObservedAt=history[0].observedAt;
   merged.events.push(...history);
+  for(const [index,places] of [[3,['wrld_democafe000000:27182~region(jp)','wrld_demoatelier000:21042~region(jp)']],[5,['wrld_demoobservatory:31415~region(jp)']]]) {
+    const latest=merged.events.find(e=>e.userId===merged.records[index].id);
+    const earlier=places.map((value,i)=>({...latest,kind:i?'changed':'first',observedAt:now-(places.length-i)*2400000,previousObservedAt:i?now-(places.length-i+1)*2400000:null,
+      previous:i?{...latest.current,location:location(places[i-1])}:null,current:{...latest.current,location:location(value)}}));
+    latest.previous=earlier.at(-1).current;latest.previousObservedAt=earlier.at(-1).observedAt;latest.kind='changed';merged.events.push(...earlier);
+    merged.records[index].firstObservedAt=earlier[0].observedAt;
+  }
   return { accountId, friends: merged.records, events: merged.events.sort((a,b)=>b.observedAt-a.observedAt), worlds: [
     { id: 'wrld_demoobservatory', name: '星灯りの展望台', authorName: '架空の制作者', capacity: 24, observedAt: now },
     { id: 'wrld_demoatelier000', name: '水辺のアトリエ', authorName: '架空の制作者', capacity: 16, observedAt: now },
