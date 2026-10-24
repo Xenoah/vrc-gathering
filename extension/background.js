@@ -1,5 +1,11 @@
 import { DEFAULTS, VERSION, settings, validContact, userAgentRule, currentUser, friend, rosterObservations, reconcile, retryDelay, jitter, world, WORLD_ID } from './core.js';
-import { list, commit, prune, clearAll } from './db.js';
+import { list, commit, prune, clearAll, exportSyncRecords, mergeSyncRecords } from './db.js';
+import { createSync, syncSettings, createAccountUpdater } from './sync.js';
+
+const updateAccounts = createAccountUpdater(chrome.storage.local);
+const cloud = createSync({ storage:chrome.storage.local, exportRecords:exportSyncRecords, mergeRecords:mergeSyncRecords, updateAccounts });
+const CLOUD_ALARM = 'vrc-observer-cloud';
+const syncQuietly = () => cloud.sync().catch(() => {});
 
 const ALARM = 'vrc-observer-next', MAINTENANCE = 'vrc-observer-prune';
 const API = 'https://vrchat.com/api/1';
@@ -124,8 +130,7 @@ async function collect(signal) {
       changedCount: changes.events.length, worldNamesPending: Math.max(0, pendingWorlds.length - 5) };
     await commit(changes.records, changes.events, worlds, run);
     nextMeta.lastSuccessAt = completedAt;
-    allMeta[accountId] = nextMeta;
-    await chrome.storage.local.set({ accountMeta: allMeta });
+    await updateAccounts(accounts => ({...accounts, [accountId]:{...accounts[accountId], ...nextMeta}}));
     await prune(config.retentionDays);
     const remaining = [!onlinePage.complete ? `オンラインの続き ${nextMeta.onlineOffset}件目〜` : '', nextMeta.offlineOffset ? `名簿の続き ${nextMeta.offlineOffset}件目〜` : '', run.worldNamesPending ? `ワールド名 ${run.worldNamesPending}件` : ''].filter(Boolean);
     await patchState({ phase: 'ready', message: remaining.length ? `保存完了。次回取得：${remaining.join('／')}` : '取得・保存が完了しました。',
@@ -133,6 +138,7 @@ async function collect(signal) {
       lastRun: run, rosterCount: finalMe.friends?.length ?? null });
     await chrome.action.setBadgeText({ text: String((me.onlineFriends?.length || 0) + (me.activeFriends?.length || 0)) });
     await chrome.action.setBadgeBackgroundColor({ color: '#226e65' });
+    void syncQuietly();
   } catch (error) {
     if (signal.aborted) return;
     const current = await state(), failures = (current.failures || 0) + 1;
@@ -166,6 +172,20 @@ async function pause() {
   await chrome.action.setBadgeText({ text: '' });
 }
 async function command(message) {
+  if (message.type === 'SYNC') { return {ok:true, ...await cloud.sync({force:message.force === true})}; }
+  if (message.type === 'SAVE_SYNC') {
+    await cloud.pause();
+    try {
+      const old = (await chrome.storage.local.get('cloudSync')).cloudSync || {};
+      const config = syncSettings({...message.settings, token:message.settings?.token || old.token || ''});
+      if (config.enabled && !await chrome.permissions.contains({origins:['https://script.google.com/*','https://script.googleusercontent.com/*']})) throw new Error('Googleへの同期権限を許可してください。');
+      const changed = config.endpoint !== old.endpoint || config.token !== old.token;
+      await chrome.storage.local.set({cloudSync:config, cloudState:{phase:config.enabled?'pending':'disabled',message:config.enabled?'同期設定を保存しました。':'同期は無効です。'}, ...(changed ? {cloudCheckpoint:{cursor:0,receipts:{}}} : {})});
+      if (config.enabled) await chrome.alarms.create(CLOUD_ALARM,{periodInMinutes:5});
+      else await chrome.alarms.clear(CLOUD_ALARM);
+      return {ok:true};
+    } finally { cloud.resume(); void syncQuietly(); }
+  }
   if (message.type === 'SAVE') {
     const previous = await configuration(), next = settings({ ...previous, ...message.settings, enabled: previous.enabled });
     if (!validContact(next.contact)) throw new Error('連絡先のメールアドレスまたはHTTPSプロフィールURLを入力してください。');
@@ -193,29 +213,43 @@ async function command(message) {
   }
   if (message.type === 'CLEAR') {
     await pause();
-    await clearAll();
-    const s = await state();
-    // Clearing personal data must not clear server-imposed backoff or the rate-limit clock.
-    await chrome.storage.local.set({ accountMeta: {}, state: { phase: 'paused', message: '保存データを削除しました。', cooldownUntil: s.cooldownUntil || 0,
-      failures: s.failures || 0, lastRequestAt: s.lastRequestAt || 0, lastStartedAt: s.lastStartedAt || 0 } });
-    return { ok: true };
+    await cloud.pause();
+    try {
+      const cloudConfig = (await chrome.storage.local.get('cloudSync')).cloudSync || {};
+      await chrome.storage.local.set({cloudSync:{...cloudConfig,enabled:false},cloudState:{phase:'disabled',message:'ローカル記録の削除に伴い同期を停止しました。'},cloudCheckpoint:{cursor:0,receipts:{}}});
+      await chrome.alarms.clear(CLOUD_ALARM);
+      await clearAll();
+      const s = await state();
+      // Clearing personal data must not clear server-imposed backoff or the rate-limit clock.
+      await chrome.storage.local.set({ accountMeta: {}, state: { phase: 'paused', message: '保存データを削除しました。', cooldownUntil: s.cooldownUntil || 0,
+        failures: s.failures || 0, lastRequestAt: s.lastRequestAt || 0, lastStartedAt: s.lastStartedAt || 0 } });
+      return { ok: true };
+    } finally { cloud.resume(); }
   }
   throw new Error('不明な操作です。');
 }
 let commandQueue = Promise.resolve();
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL(''))) return false;
+  if (message.type === 'SYNC') {
+    command(message).then(respond, error => respond({ok:false,error:error.message}));
+    return true;
+  }
   commandQueue = commandQueue.then(() => command(message)).then(respond, error => respond({ ok: false, error: error.message }));
   return true;
 });
 chrome.action.onClicked.addListener(() => { chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') }); });
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === ALARM) void run();
+  if (alarm.name === CLOUD_ALARM) void syncQuietly();
   if (alarm.name === MAINTENANCE) configuration().then(c => prune(c.retentionDays)).catch(() => {});
 });
 async function boot() {
   await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
   const config = await configuration();
+  if ((await chrome.storage.local.get('cloudSync')).cloudSync?.enabled) {
+    if (!await chrome.alarms.get(CLOUD_ALARM)) await chrome.alarms.create(CLOUD_ALARM,{periodInMinutes:5});
+  }
   await prune(config.retentionDays);
   if (!await chrome.alarms.get(MAINTENANCE)) await chrome.alarms.create(MAINTENANCE, { delayInMinutes: 60 + Math.random() * 10, periodInMinutes: 60 });
   if (config.enabled && !await chrome.alarms.get(ALARM)) {

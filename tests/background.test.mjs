@@ -7,7 +7,7 @@ const uid='usr_01234567-1111-2222-3333-012345678901',fid='usr_11111111-1111-2222
 const owner={id:uid,displayName:'テスト本人',friends:[fid],onlineFriends:[fid],offlineFriends:[],activeFriends:[],authToken:'SECRET_AUTH',email:'SECRET_MAIL'};
 const online={id:fid,displayName:'架空フレンド',status:'active',location:wid+':123~region(jp)',authToken:'SECRET_AUTH',friendKey:'SECRET_KEY'};
 
-async function harness(handler){
+async function harness(handler, allowCloud = true){
   let now=Date.UTC(2026,9,24),closed=false;
   const events={},store={},alarms=new Map(),saved={friends:[],events:[],worlds:[],runs:[]},calls=[];
   const hook=name=>({addListener:fn=>{events[name]=fn;}});
@@ -15,7 +15,7 @@ async function harness(handler){
     get:async key=>{const keys=Array.isArray(key)?key:[key];return structuredClone(Object.fromEntries(keys.filter(k=>k in store).map(k=>[k,store[k]])));},
     set:async values=>Object.assign(store,structuredClone(values)),setAccessLevel:async()=>{}
   };
-  const chrome={storage:{local:storage},alarms:{create:async(n,v)=>alarms.set(n,v),get:async n=>alarms.get(n),clear:async n=>alarms.delete(n),onAlarm:hook('alarm')},
+  const chrome={permissions:{contains:async()=>allowCloud},storage:{local:storage},alarms:{create:async(n,v)=>alarms.set(n,v),get:async n=>alarms.get(n),clear:async n=>alarms.delete(n),onAlarm:hook('alarm')},
     action:{setBadgeText:async()=>{},setBadgeBackgroundColor:async()=>{},onClicked:hook('click')},
     runtime:{id:'testextension',getURL:p=>'chrome-extension://testextension/'+p,onMessage:hook('message'),onInstalled:hook('installed'),onStartup:hook('startup')},
     declarativeNetRequest:{updateDynamicRules:async v=>{saved.rules=v;}},tabs:{create:async()=>{}}};
@@ -23,14 +23,16 @@ async function harness(handler){
   const context=vm.createContext({chrome,console,navigator:{userAgent:'TestChrome'},Date:Clock,Math,URL,AbortController,AbortSignal,DOMException,
     setTimeout:(fn,ms)=>{now+=ms;queueMicrotask(fn);return 1;},clearTimeout:()=>{},
     fetch:async(url,options)=>{if(closed)throw Error('closed');now+=50;calls.push({url,options,at:now});
-      const response=handler(new URL(url),calls.length);return {ok:(response.status||200)<300,status:response.status||200,type:response.type||'basic',headers:new Headers({'Content-Type':'application/json',...(response.headers||{})}),json:async()=>structuredClone(response.body)};}});
+      const response=handler(new URL(url),calls.length,options);return {ok:(response.status||200)<300,status:response.status||200,type:response.type||'basic',headers:new Headers({'Content-Type':'application/json',...(response.headers||{})}),json:async()=>structuredClone(response.body)};}});
   const dbExports={list:async(name,id)=>structuredClone(saved[name].filter(v=>v.accountId===id)),
     commit:async(f,e,w,r)=>{for(const v of f){saved.friends=saved.friends.filter(x=>!(x.accountId===v.accountId&&x.id===v.id));saved.friends.push(structuredClone(v));}saved.events.push(...structuredClone(e));saved.worlds.push(...structuredClone(w));if(r)saved.runs.push(structuredClone(r));},
-    prune:async()=>{},clearAll:async()=>{for(const k of ['friends','events','worlds','runs'])saved[k]=[];}};
+    exportSyncRecords:async()=>[],mergeSyncRecords:async()=>{},prune:async()=>{},clearAll:async()=>{for(const k of ['friends','events','worlds','runs'])saved[k]=[];}};
   const db=new vm.SyntheticModule(Object.keys(dbExports),function(){for(const[k,v]of Object.entries(dbExports))this.setExport(k,v);},{context});
   const core=new vm.SourceTextModule(await fs.readFile(new URL('core.js',root),'utf8'),{context});await core.link(()=>{});
+  const format=new vm.SourceTextModule(await fs.readFile(new URL('sync-format.js',root),'utf8'),{context});await format.link(()=>{});
+  const sync=new vm.SourceTextModule(await fs.readFile(new URL('sync.js',root),'utf8'),{context});await sync.link(()=>format);
   const bg=new vm.SourceTextModule(await fs.readFile(new URL('background.js',root),'utf8'),{context});
-  await bg.link(spec=>spec==='./core.js'?core:db);await bg.evaluate();
+  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync.js'?sync:db);await bg.evaluate();
   async function flush(){for(let i=0;i<15;i++)await new Promise(setImmediate);}
   await flush();
   const command=message=>new Promise(resolve=>events.message(message,{id:'testextension',url:'chrome-extension://testextension/dashboard.html'},resolve));
@@ -76,4 +78,19 @@ test('websites cannot send collection commands',async()=>{
 test('immediate pause/restart respects minimum cycle interval',async()=>{
   const h=await harness(good);await h.start();const calls=h.calls.length;
   await h.command({type:'PAUSE'});await h.command({type:'START'});await h.flush();assert.equal(h.calls.length,calls);h.stop();
+});
+
+test('cloud configuration requires optional Google permissions and cannot alter collection settings',async()=>{
+  const h=await harness(good,false);
+  const response=await h.command({type:'SAVE_SYNC',settings:{enabled:true,endpoint:'https://script.google.com/macros/s/test/exec',token:'test_token_0123456789_abcdefghijklmnopqrstuvwxyz'}});
+  assert.equal(response.ok,false);assert.match(response.error,/権限/);assert.equal(h.store.cloudSync,undefined);assert.equal(h.calls.length,0);h.stop();
+});
+test('cloud setup schedules sync, uses no VRChat cookies, and clearing local records disables sync',async()=>{
+  const h=await harness(url=>({body:{protocol:1,ok:true,records:[],cursor:0,hasMore:false}}));
+  const response=await h.command({type:'SAVE_SYNC',settings:{enabled:true,endpoint:'https://script.google.com/macros/s/test/exec',token:'test_token_0123456789_abcdefghijklmnopqrstuvwxyz'}});
+  assert.equal(response.ok,true);await h.flush();assert.equal(h.store.cloudState.phase,'ready');
+  assert.equal(h.calls.length,1);assert.equal(h.calls[0].options.credentials,'omit');assert.equal(h.calls[0].options.method,'POST');
+  assert.ok(h.alarms.has('vrc-observer-cloud'));
+  await h.command({type:'CLEAR'});assert.equal(h.store.cloudSync.enabled,false);assert.ok(!h.alarms.has('vrc-observer-cloud'));
+  h.events.alarm({name:'vrc-observer-cloud'});await h.flush();assert.equal(h.calls.length,1);h.stop();
 });

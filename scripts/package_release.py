@@ -24,7 +24,7 @@ def main():
     if "export const VERSION = '" + version + "';" not in core:
         raise SystemExit('Core version does not match the extension version.')
     paths = [ROOT / name for name in ['README.md', 'README_ja.md', 'VALIDATION.md', 'RELEASE_NOTES.md', 'package.json']]
-    for directory in ['extension', 'windows', 'tests', 'scripts']:
+    for directory in ['extension', 'windows', 'tests', 'scripts', 'gas']:
         paths.extend(p for p in (ROOT / directory).rglob('*') if p.is_file() and '__pycache__' not in p.parts)
     payloads = {}
     for path in sorted(paths):

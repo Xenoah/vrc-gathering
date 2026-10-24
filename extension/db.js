@@ -1,3 +1,4 @@
+import { normalizeRecord, newerRecord } from './sync-format.js';
 let opening;
 export function db() {
   if (!opening) opening = new Promise((resolve, reject) => {
@@ -39,13 +40,45 @@ export async function timeline(store, accountId, { before = Number.MAX_SAFE_INTE
   });
 }
 export async function commit(records, events, worlds, run) {
-  const d = await db(), tx = d.transaction(['friends', 'events', 'worlds', 'runs'], 'readwrite');
-  const done = complete(tx);
-  records.forEach(v => tx.objectStore('friends').put(v));
-  events.forEach(v => tx.objectStore('events').add(v));
-  worlds.forEach(v => tx.objectStore('worlds').put(v));
-  if (run) tx.objectStore('runs').add(run);
-  await done;
+  const rows = [...records.map(v => normalizeRecord('friends', v)), ...events.map(v => normalizeRecord('events', v)),
+    ...worlds.map(v => normalizeRecord('worlds', v)), ...(run ? [normalizeRecord('runs', run)] : [])];
+  await mergeSyncRecords(rows);
+}
+export async function exportSyncRecords() {
+  const d = await db(), names = ['friends', 'events', 'worlds', 'runs'];
+  const tx = d.transaction(names);
+  const values = await Promise.all(names.map(name => result(tx.objectStore(name).getAll())));
+  return values.flatMap((rows, i) => rows.map(value => normalizeRecord(names[i], value)));
+}
+export async function mergeSyncRecords(records) {
+  // One transaction merges a downloaded batch. Replayed batches cannot duplicate history.
+  const names = ['friends', 'events', 'worlds', 'runs'];
+  const d = await db(), tx = d.transaction(names, 'readwrite'), done = complete(tx);
+  try {
+    const values = await Promise.all(names.map(name => result(tx.objectStore(name).getAll())));
+    const maps = new Map(names.map((name, i) => [name, new Map(values[i].map(value => {
+      const record = normalizeRecord(name, value); return [record.key, {record, localKey: value.key}];
+    }))]));
+    for (const record of records) {
+      if (!maps.has(record.kind)) continue;
+      const map = maps.get(record.kind), old = map.get(record.key);
+      if (!newerRecord(record, old?.record)) continue;
+      const value = {...record.value};
+      if (old?.localKey != null) value.key = old.localKey;
+      const request = tx.objectStore(record.kind).put(value);
+      const entry = {record, localKey: old?.localKey};
+      map.set(record.key, entry);
+      if (record.kind === 'events' || record.kind === 'runs') {
+        // Await the generated local key so repeated records in this batch update the same row.
+        entry.localKey = await result(request);
+      }
+    }
+    await done;
+  } catch (error) {
+    try { tx.abort(); } catch {}
+    await done.catch(() => {});
+    throw error;
+  }
 }
 export async function prune(retentionDays, now = Date.now()) {
   const d = await db(), tx = d.transaction(['events', 'runs', 'friends', 'worlds'], 'readwrite');

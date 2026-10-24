@@ -64,7 +64,7 @@ test('configuration bounds and UA scope prevent host-wide header mutation',()=>{
   assert.equal(validContact('https://github.com/Xenoah'),true);assert.equal(validContact('abc\r\nHeader:value'),false);
   const rule=userAgentRule('abcdefghijklmnop','Chrome/test','https://github.com/example');
   assert.deepEqual(rule.condition.initiatorDomains,['abcdefghijklmnop']);
-  assert.equal(rule.condition.urlFilter,'|https://vrchat.com/api/1/');assert.match(rule.action.requestHeaders[0].value,/VRCFriendsObserver\/0.1.0/);
+  assert.equal(rule.condition.urlFilter,'|https://vrchat.com/api/1/');assert.match(rule.action.requestHeaders[0].value,/VRCFriendsObserver\/0.2.0/);
 });
 test('manifest permissions are bounded and code does not accept arbitrary URLs or messages from websites',()=>{
   const m=JSON.parse(fs.readFileSync(new URL('../extension/manifest.json',import.meta.url)));
@@ -73,7 +73,7 @@ test('manifest permissions are bounded and code does not accept arbitrary URLs o
   assert.equal(m.externally_connectable,undefined);assert.equal(m.content_scripts,undefined);
 });
 test('demo data is valid and contains visible/private/offline/stale examples',()=>{
-  const d=demoData();assert.equal(d.friends.length,9);assert.equal(d.events.length,9);
+  const d=demoData();assert.equal(d.friends.length,9);assert.equal(d.events.length,12);
   assert.equal(d.friends.filter(f=>f.location.kind==='private').length,2);
   assert.equal(d.friends.filter(f=>f.presence==='offline').length,1);
   assert.ok(d.friends.some(f=>Date.now()-f.observedAt>600000));
