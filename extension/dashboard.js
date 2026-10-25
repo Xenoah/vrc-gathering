@@ -49,6 +49,7 @@ function showSyncSkip(response) {
 function tab(name) {
   for (const b of document.querySelectorAll('[data-tab]')) { b.classList.toggle('selected', b.dataset.tab === name); b.setAttribute('aria-current', b.dataset.tab === name ? 'page' : 'false'); }
   for (const id of ['home','analytics','friends','ranking','journey','history','settings','help']) $(id + 'Panel').hidden = id !== name;
+  if (name === 'analytics' && loaded) renderActivity();
 }
 const worldName = id => data.worlds.find(w => w.id === id)?.name || id;
 function place(f) { const l = f?.location; return l?.kind === 'world' ? worldName(l.worldId) : ({ private:'所在非公開', offline:'オフライン', traveling:'移動中', web:'ワールド情報なし', unknown:'所在不明' }[l?.kind] || '不明'); }
@@ -134,6 +135,8 @@ const activityAxisFormat=new Intl.DateTimeFormat('ja-JP',{
   timeZone:'Asia/Tokyo',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false
 });
 function renderActivity() {
+  // Keep dashboard initialization and normal refreshes cheap while Analytics is hidden.
+  if ($('analyticsPanel').hidden) return;
   const hours=Number($('activityRange').value)||24;
   const timeline=buildActivityTimeline(data.friends,data.journeyEvents||data.events,data.worlds,{
     now:Date.now(),rangeMs:hours*3600000,filter:$('activityFilter').value,
@@ -388,7 +391,11 @@ async function exportData(kind){
 document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab(b.dataset.tab);void syncView();}));
 document.querySelectorAll('[data-go-panel]').forEach(b=>b.addEventListener('click',()=>tab(b.dataset.goPanel)));
 for(const id of ['activityRange','activityFilter'])$(id).addEventListener('change',renderActivity);
-$('activitySearch').addEventListener('input',renderActivity);
+let activitySearchDebounce;
+$('activitySearch').addEventListener('input',()=>{
+  clearTimeout(activitySearchDebounce);
+  activitySearchDebounce=setTimeout(renderActivity,160);
+});
 $('emptySettings').addEventListener('click',()=>tab('settings'));
 $('friendSort').addEventListener('change',render);$('rankingSort').addEventListener('change',renderInsights);
 $('search').addEventListener('input',render);$('filter').addEventListener('change',render);
