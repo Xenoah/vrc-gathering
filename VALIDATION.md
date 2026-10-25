@@ -195,3 +195,12 @@ Chromiumでchrome.storageの変更通知を発生させ、入力途中のメモ�
 - Chromiumで実IndexedDBとワーカーを使い、公式本文の取得・再確認・改行／HTML文字列・変更履歴・空欄・本文欠落・アカウント切替・古い非同期応答の抑止・再読み込み後の保持・記録JSON・保存期間・390px表示を確認。公式編集用のリンクと読み取り専用表示を確認しました。
 - 参照仕様：[User Notes API](https://github.com/vrchatapi/specification/blob/850f01edf968dc4baa13c09e96d8a8d75686a3eb/openapi/components/paths/users.yaml)、[UserNote](https://github.com/vrchatapi/specification/blob/850f01edf968dc4baa13c09e96d8a8d75686a3eb/openapi/components/schemas/UserNote.yaml)、[User.note](https://github.com/vrchatapi/specification/blob/850f01edf968dc4baa13c09e96d8a8d75686a3eb/openapi/components/schemas/User.yaml)。これは公開コミュニティ仕様です。実ログインアカウントでのAPI応答・公開GAS・ユーザー端末のChromeでの導入は未確認です。
 - DB4・HTTP／レコードスキーマ2を維持し、18種類の同期へ拡張。GAS両ファイルの更新・setup・再デプロイが必要です。
+
+## Xフォロワー取得の重複修正・3件並行取得（v0.13.1 / 2026-10-25）
+
+- `npm test`: **187件成功**。取得待ちへの追加・個別更新・処理直前の再評価で未取得を優先し、取得済みは古い順に処理することを検証。
+- 同じ一括取得中の完了済みURLの再登録防止、重複した完了通知、順不同の3件完了、15秒未満の追加抑止、空き枠への補充、停止・再開、3件タイムアウト、全枠の利用制限停止を検証。
+- 旧1件キューからの移行、3件の処理中タブをワーカー再起動後に引き継ぐこと、タブ作成直後の中断復旧、アカウント別の取得済み判定、手動で開いたタブからの結果取り込みを検証。
+- `python3 tests/x_collection_browser_smoke.py`: 実際のChromiumで3タブ同時表示、未取得4件を更新2件より先に処理、途中の重複要求、画面再読み込み、個別の自動／手動取得、利用制限、手動タブ保護、390px表示を検証。
+- `python3 tests/x_profile_browser_smoke.py`: Xリンク・フォロワー数の更新と並べ替え、ヘッダーの正確値／概数、既存のステータス色・アカウント切替を回帰検証。
+- 拡張JS全ファイルとGASの構文検査が成功。XのHTML・Chrome APIの接続部分はテスト用フィクスチャで、処理・保存・画面は実装を使用。実Xアカウントおよびユーザー端末への導入は未検証。

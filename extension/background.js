@@ -69,6 +69,13 @@ const API = 'https://vrchat.com/api/1';
 let activeRun = null, controller = null, activeProfile = null, profileController = null, profileResetting = false;
 const followerQueue=createFollowerCollector({storage:chrome.storage.local,tabs:chrome.tabs,alarms:chrome.alarms,
   allowed:async()=>!profileResetting&&(await chrome.storage.local.get('xFollowerSettings')).xFollowerSettings?.enabled===true&&await chrome.permissions.contains({origins:X_FOLLOWER_ORIGINS}),
+  latest:async jobs=>{
+    const saved=await chrome.storage.local.get(['xFollowerCache','xProfileCache']),records=followerRecords(saved.xFollowerCache),values={};
+    const metrics=new Map(records.map(r=>[r.value.accountId+'/'+r.value.url,r.value.observedAt]));
+    for(const job of jobs){const accounts=job.accounts?.length?job.accounts:Object.values(saved.xProfileCache||{}).filter(p=>readXCache(saved.xProfileCache,p?.accountId,p?.userId)?.urls.includes(job.url)).map(p=>p.accountId);
+      values[job.url]=accounts.length?Math.min(...accounts.map(id=>metrics.get(id+'/'+job.url)||0)):0;}
+    return values;
+  },
   isKnown:async url=>{const cache=(await chrome.storage.local.get('xProfileCache')).xProfileCache||{};return Object.values(cache).some(e=>readXCache(cache,e?.accountId,e?.userId)?.urls.includes(url));}});
 async function collectFollowers({accountId,userId,force=false}){
   if(!USER_ID.test(accountId||'')||userId&&!USER_ID.test(userId))throw Error('対象ユーザーが不正です。');
@@ -77,7 +84,7 @@ async function collectFollowers({accountId,userId,force=false}){
   if(userId&&!ids.length)throw Error('記録済みのユーザーを選択してください。');
   const all=followerTargets(saved.xProfileCache,saved.xFollowerCache,accountId,ids),targets=userId&&!force?all.filter(t=>Date.now()-t.observedAt>=60000):all;
   if(!targets.length)return {ok:true,skipped:true,reason:all.length?'fresh':'no-links'};
-  return followerQueue.enqueue(targets,{single:!!userId});
+  return followerQueue.enqueue(targets,{single:!!userId,force});
 }
 const IMAGE_ALARM='vrc-observer-images';
 const imageCollector=createImageCollector({store:{list:async()=>{const accountId=(await state()).accountId;return accountId?cachedImages(accountId):[];},update:updateCachedImage,trim:trimImageCache},

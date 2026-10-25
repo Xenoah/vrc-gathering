@@ -13,7 +13,7 @@ async def main():
   async with async_playwright() as p:
     browser=await p.chromium.launch(executable_path='/usr/bin/chromium',headless=True)
     context=await browser.new_context(viewport={'width':1450,'height':1050})
-    pages={};rows={};created=[];errors=[];requests=[];counter=0;worker=None;counts={'missing':555,'old':222,'fresh':333};modes={}
+    pages={};rows={};created=[];errors=[];requests=[];counter=0;worker=None;counts={'missing':555,'old':222,'fresh':333,'missing_b':44,'missing_c':55,'missing_d':66};modes={name:'hold' for name in counts if name.startswith('missing')}
     async def tab_create(source,options):
       nonlocal counter
       counter+=1;id=counter;page=await context.new_page();pages[id]=page;rows[id]={'id':id,'active':options.get('active',False),'pinned':False};created.append(options['url'])
@@ -44,33 +44,56 @@ async def main():
       const storage={get:async keys=>{await window.seedReady;return structuredClone(Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,values[k]])));},set:async next=>{Object.assign(values,structuredClone(next));localStorage.setItem('queue-fixture',JSON.stringify(values));listeners.forEach(fn=>fn());},setAccessLevel:async()=>{}};
       window.chrome={storage:{local:storage,onChanged:{addListener:fn=>listeners.push(fn)}},permissions:{contains:async()=>true,request:async()=>true},scripting:{getRegisteredContentScripts:async()=>[...scripts.values()],registerContentScripts:async list=>list.forEach(s=>scripts.set(s.id,s)),updateContentScripts:async list=>list.forEach(s=>scripts.set(s.id,s)),unregisterContentScripts:async({ids})=>ids.forEach(id=>scripts.delete(id))},alarms:{create:async(n,v)=>alarms.set(n,v),clear:async n=>alarms.delete(n),get:async n=>alarms.get(n),onAlarm:{addListener:fn=>fixture.alarm=fn}},action:{setBadgeText:async()=>{},setBadgeBackgroundColor:async()=>{},onClicked:noop},declarativeNetRequest:{updateDynamicRules:async()=>{}},tabs:{create:opts=>tabCreate(opts),get:id=>tabGet(id),query:()=>tabQuery(),remove:id=>tabRemove(id),sendMessage:(id,m)=>tabProbe(id,m),onUpdated:noop,onRemoved:noop},runtime:{id:'testextension',getURL:path=>new URL(path,location.href).href,onInstalled:noop,onStartup:noop,onMessage:{addListener:fn=>fixture.message=fn},sendMessage:async message=>{await window.workerReady;return new Promise(resolve=>fixture.message(message,{id:'testextension',url:location.href},resolve));}}};
       const fetchReal=fetch;window.fetch=(...args)=>{if(String(args[0]).startsWith('https://')){fixture.api.push(String(args[0]));throw Error('No external API calls expected');}return fetchReal(...args);};
-      window.seedReady=(async()=>{const d=(await import('/demo.js')).demoData(),{mergeSyncRecords}=await import('/db.js'),{normalizeRecord}=await import('/sync-format.js');await mergeSyncRecords(d.friends.map(f=>normalizeRecord('friends',f)));if(!values.xProfileCache){const profiles={},metrics={},names=['missing','old','fresh'];d.friends.slice(0,3).forEach((f,i)=>{const url='https://x.com/'+names[i];profiles[accountId+'/'+f.id]={accountId,userId:f.id,checkedAt:Date.now(),urls:[url]};if(i)metrics['xFollowers:'+accountId+':'+names[i]]={accountId,url,followers:i,approximate:false,source:'x-profile',observedAt:Date.now()-(i===1?172800000:300000)};});values.xProfileCache=profiles;values.xFollowerCache=metrics;}})();
+      window.seedReady=(async()=>{const d=(await import('/demo.js')).demoData(),{mergeSyncRecords}=await import('/db.js'),{normalizeRecord}=await import('/sync-format.js');await mergeSyncRecords(d.friends.map(f=>normalizeRecord('friends',f)));if(!values.xProfileCache){const profiles={},metrics={},names=['missing','old','fresh','missing_b','missing_c','missing_d'];d.friends.slice(0,6).forEach((f,i)=>{const url='https://x.com/'+names[i];profiles[accountId+'/'+f.id]={accountId,userId:f.id,checkedAt:Date.now(),urls:[url]};if(i===1||i===2)metrics['xFollowers:'+accountId+':'+names[i]]={accountId,url,followers:i,approximate:false,source:'x-profile',observedAt:Date.now()-(i===1?172800000:300000)};});values.xProfileCache=profiles;values.xFollowerCache=metrics;}})();
       window.workerReady=seedReady.then(()=>import('/background.js'));
     }
     '''.replace('PARSER_SOURCE',parser).replace('CONTENT_SOURCE',content))
+    def profile_body(path):
+      return f'<main data-testid="primaryColumn"><div data-testid="UserName"><span>@{path}</span></div><a href="/{path}/following"><span>99999</span> Following</a><a href="/{path}/verified_followers"><span title="{counts[path]:,}">{counts[path]:,}</span> Followers</a><article><a href="/{path}/followers">999999 Followers</a></article></main>'
     async def x_route(route):
       path=route.request.url.split('x.com/',1)[1].split('#')[0].split('?')[0];requests.append(route.request.url)
       if path not in counts:raise Exception('Unexpected X request '+path)
       if modes.get(path)=='limit':body='<main data-testid="primaryColumn"><div role="alert">Rate limit exceeded</div></main>'
-      else:body=f'<main data-testid="primaryColumn"><div data-testid="UserName"><span>@{path}</span></div><a href="/{path}/following"><span>99999</span> Following</a><a href="/{path}/verified_followers"><span title="{counts[path]:,}">{counts[path]:,}</span> Followers</a><article><a href="/{path}/followers">999999 Followers</a></article></main>'
+      elif modes.get(path)=='hold':body='<main>Loading</main>'
+      else:body=profile_body(path)
       await route.fulfill(status=200,content_type='text/html',body='<html><body>'+body+'</body></html>')
     await context.route('https://x.com/**',x_route)
     worker=await context.new_page();worker.on('pageerror',lambda e:errors.append(str(e)))
     await worker.goto(base+'/dashboard.html');await worker.locator('[data-tab=friends]').click()
-    await expect(worker.locator('#friendsPanel [data-x-queue]')).to_contain_text('対象 3件')
+    await expect(worker.locator('#friendsPanel [data-x-queue]')).to_contain_text('対象 6件')
     await worker.locator('#friendsPanel [data-x-collect]').click()
-    await worker.wait_for_function('fixture.values.xFollowerQueue?.success===1')
-    assert '/missing#' in created[0];assert not [v for v in pages.values() if not v.is_closed()]
-    async def next_job():await worker.evaluate("()=>{fixture.offset+=16000;fixture.alarm({name:'vrc-x-follower-queue'});}")
-    await next_job();await worker.wait_for_function('fixture.values.xFollowerQueue?.success===2');assert '/old#' in created[1]
-    await next_job();await worker.wait_for_function("fixture.values.xFollowerQueue?.phase==='complete'");assert '/fresh#' in created[2]
-    await expect(worker.locator('#friendsPanel [data-x-queue]')).to_contain_text('3成功')
+    await worker.wait_for_function('fixture.values.xFollowerQueue?.active?.length===3 && fixture.values.xFollowerQueue.active.every(j=>j.tabId!=null)')
+    assert [u.split('/')[3].split('#')[0] for u in created]==['missing','missing_b','missing_c'],created
+    assert len([v for v in pages.values() if not v.is_closed()])==3
+    await expect(worker.locator('#friendsPanel [data-x-queue]')).to_contain_text('同時取得 3/3件')
     assert await worker.evaluate('fixture.api.length')==0
+    async def enqueue_again():
+      return await worker.evaluate("chrome.runtime.sendMessage({type:'COLLECT_X_FOLLOWERS',accountId:'usr_demoaccount0001'})")
+    assert (await enqueue_again())['added']==0
+    async def next_job():await worker.evaluate("()=>{fixture.offset+=16000;fixture.alarm({name:'vrc-x-follower-queue'});}")
+    async def release(name):
+      modes.pop(name,None)
+      page=next(page for page in pages.values() if not page.is_closed() and page.url.split('#')[0]=='https://x.com/'+name)
+      await page.evaluate('(html)=>document.body.innerHTML=html',profile_body(name))
+    # One completion refills only its slot; an unobserved user precedes both refreshes.
+    await next_job();await release('missing')
+    await worker.wait_for_function('fixture.values.xFollowerQueue?.success===1 && fixture.values.xFollowerQueue?.active?.length===3 && fixture.values.xFollowerQueue.active.every(j=>j.tabId!=null)')
+    assert '/missing_d#' in created[3];assert len(created)==4
+    for name in ['missing_b','missing_c','missing_d']:await release(name)
+    await worker.wait_for_function('fixture.values.xFollowerQueue?.success===4')
+    assert (await enqueue_again())['added']==0
+    await next_job();await worker.wait_for_function("fixture.values.xFollowerQueue?.phase==='complete'")
+    assert '/old#' in created[4] and '/fresh#' in created[5]
+    assert len(created)==6;await expect(worker.locator('#friendsPanel [data-x-queue]')).to_contain_text('6成功')
+    assert not [v for v in pages.values() if not v.is_closed()]
+    offset=await worker.evaluate('fixture.offset')
+    await worker.reload();await worker.evaluate('(n)=>fixture.offset=n',offset);await worker.locator('[data-tab=friends]').click()
+    await expect(worker.locator('#friendsPanel [data-x-queue]')).to_contain_text('6成功');assert len(created)==6
     # Actual user detail triggers one priority refresh and updates its visible count.
     await worker.evaluate('fixture.offset+=61000');counts['missing']=777
     await worker.locator('#friendsBody tr').filter(has_text='星灯り').click()
     await expect(worker.locator('#detailXProfiles .follower-count')).to_contain_text('777',timeout=15000)
-    assert len(created)==4
+    assert len(created)==7
     counts['missing']=888;await worker.get_by_role('button',name='フォロワー数を更新',exact=True).click();await next_job()
     await expect(worker.locator('#detailXProfiles .follower-count')).to_contain_text('888')
     await worker.locator('#closeDetail').click()
@@ -78,7 +101,7 @@ async def main():
     counts['missing']=999;manual=await context.new_page();await manual.goto('https://x.com/missing')
     await worker.wait_for_function("fixture.values.xFollowerCache['xFollowers:usr_demoaccount0001:missing'].followers===999");assert not manual.is_closed();await manual.close()
     # Explicit page rate-limit notice pauses, preserving the previous value and pending jobs.
-    modes['old']='limit';await worker.locator('#friendsPanel [data-x-collect]').click();await next_job()
+    modes['old']='limit';await worker.locator('#friendsPanel [data-x-collect]').click();await next_job();await next_job()
     await worker.wait_for_function("fixture.values.xFollowerQueue?.phase==='paused'")
     assert await worker.evaluate("fixture.values.xFollowerCache['xFollowers:usr_demoaccount0001:old'].followers")==222
     # The independent official-note reader may try an identity GET when the detail opens.
@@ -88,6 +111,6 @@ async def main():
     await worker.set_viewport_size({'width':390,'height':844});assert await worker.evaluate('document.documentElement.scrollWidth<=innerWidth')
     await worker.screenshot(path='/tmp/vrc-x-collection-mobile.png',full_page=True)
     assert not errors,errors
-    await browser.close();print('PASS: real separate tabs, priority bulk queue, automatic and manual detail refresh, live counts, preserved manual tab, rate-limit pause, no APIs during bulk X collection, mobile')
+    await browser.close();print('PASS: three concurrent real tabs, missing-first refill, no repeated bulk jobs across refresh/restart, automatic and manual detail refresh, live counts, preserved manual tab, rate-limit pause, no APIs during bulk X collection, mobile')
 try:asyncio.run(main())
 finally:server.shutdown()

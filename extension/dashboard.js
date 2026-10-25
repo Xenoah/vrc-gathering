@@ -11,7 +11,7 @@ import { initializeSettingsBackup } from './settings-backup-ui.js';
 import { createConnectionsView } from './connections-ui.js';
 import { createResearchView } from './research-ui.js';
 import { createAnalysisLab } from './analysis-lab-ui.js';
-import { followerTargets } from './x-follower-collector.js';
+import { followerTargets, activeFollowerJobs, X_QUEUE_CONCURRENCY } from './x-follower-collector.js';
 import { X_FOLLOWER_ORIGINS, followerRecords, bestFollowerMetric, followerText } from './x-followers.js';
 import { createUserNotesView } from './user-notes-ui.js';
 import { createXProfileView } from './x-profile-ui.js';
@@ -531,10 +531,11 @@ async function enableXFollowers(){
 }
 function renderXCollection(){
   const targets=followerTargets(xProfiles,xMetrics,selectedAccount,data.friends.filter(f=>f.isFriend).map(f=>f.id)),missing=targets.filter(t=>!t.observedAt).length,old=targets.filter(t=>t.observedAt&&Date.now()-t.observedAt>=86400000).length,q=xFollowerQueue;
-  const progress=q.total?`取得キュー：${q.success||0}成功 / ${q.failed||0}未確認 / ${q.skipped||0}対象外 / 全${q.total}件 · ${q.message||''}`:'取得を開始すると進捗を表示します。';
+  const active=activeFollowerJobs(q);
+  const progress=q.total?`取得キュー：${q.success||0}成功 / ${q.failed||0}未確認 / ${q.skipped||0}対象外 / 全${q.total}件 · 同時取得 ${active.length}/${X_QUEUE_CONCURRENCY}件${active.length?'（'+active.map(j=>'@'+j.url.slice(14)).join('・')+'）':''} · ${q.message||''}`:'取得を開始すると進捗を表示します。';
   for(const n of document.querySelectorAll('[data-x-queue]'))n.textContent=`対象 ${targets.length}件（未取得 ${missing}件・24時間以上前 ${old}件） · ${progress}`;
   for(const b of document.querySelectorAll('[data-x-collect]'))b.disabled=isDemo||!targets.length||['running','waiting'].includes(q.phase);
-  for(const b of document.querySelectorAll('[data-x-pause]'))b.disabled=isDemo||!q.active&&!q.items?.length||q.phase==='paused';
+  for(const b of document.querySelectorAll('[data-x-pause]'))b.disabled=isDemo||!active.length&&!q.items?.length||q.phase==='paused';
   for(const b of document.querySelectorAll('[data-x-resume]'))b.disabled=isDemo||!q.items?.length||q.phase!=='paused';
 }
 for(const b of document.querySelectorAll('[data-x-collect]'))b.addEventListener('click',async()=>{b.disabled=true;try{await enableXFollowers();const result=await call({type:'COLLECT_X_FOLLOWERS',accountId:selectedAccount},{rethrow:true});toast(result.skipped?'確認済みのXリンクがありません。':result.queue?.phase==='paused'?result.queue.message:'Xフォロワー数の取得を開始しました。');await reload();}catch(error){toast(error.message);}finally{renderXCollection();}});

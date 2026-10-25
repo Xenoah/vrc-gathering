@@ -300,15 +300,17 @@ test('bulk follower collection opens known X pages in priority order and single-
     await h.start();const now=h.store.accountMeta[uid].lastSuccessAt;
     h.store.xProfileCache={[uid+'/'+fid]:{accountId:uid,userId:fid,checkedAt:now,urls:['https://x.com/newcount','https://x.com/oldcount']}};
     h.store.xFollowerCache={['xFollowers:'+uid+':oldcount']:{accountId:uid,url:'https://x.com/oldcount',followers:10,approximate:false,source:'x-profile',observedAt:now-86400000}};
+    // Another VRChat account's synced count must not mark this owner's target as collected.
+    h.store.xFollowerCache.other={accountId:'usr_otheraccount01',url:'https://x.com/newcount',followers:99,approximate:false,source:'x-profile',observedAt:now+1000};
     assert.equal((await h.command({type:'COLLECT_X_FOLLOWERS',accountId:uid})).ok,false);
     await h.command({type:'SAVE_X_FOLLOWERS',enabled:true});const calls=h.calls.length;
-    const batch=await h.command({type:'COLLECT_X_FOLLOWERS',accountId:uid});assert.equal(batch.ok,true);assert.equal(batch.added,2);assert.equal(h.store.xFollowerQueue.active.url,'https://x.com/newcount');
-    const id=h.store.xFollowerQueue.active.tabId,sender={id:'testextension',url:h.tabRows.get(id).url,frameId:0,tab:{id}};
-    const observed=await new Promise(resolve=>h.events.message({type:'X_FOLLOWERS_OBSERVED',url:'https://x.com/newcount',followers:123,approximate:false},sender,resolve));assert.equal(observed.ok,true);assert.equal(h.store.xFollowerQueue.success,1);assert.equal(h.tabRows.size,0);
+    const batch=await h.command({type:'COLLECT_X_FOLLOWERS',accountId:uid});assert.equal(batch.ok,true);assert.equal(batch.added,2);assert.equal(h.store.xFollowerQueue.active[0].url,'https://x.com/newcount');
+    const id=h.store.xFollowerQueue.active[0].tabId,sender={id:'testextension',url:h.tabRows.get(id).url,frameId:0,tab:{id}};
+    const observed=await new Promise(resolve=>h.events.message({type:'X_FOLLOWERS_OBSERVED',url:'https://x.com/newcount',followers:123,approximate:false},sender,resolve));assert.equal(observed.ok,true);assert.equal(h.store.xFollowerQueue.success,1);assert.equal(h.tabRows.size,1);
     assert.ok(h.saved.research.some(r=>r.kind==='followerHistory'&&r.value.followers===123));
-    h.advance(16000);h.events.alarm({name:'vrc-x-follower-queue'});await h.flush();assert.equal(h.store.xFollowerQueue.active.url,'https://x.com/oldcount');assert.equal(h.calls.length,calls);
+    h.advance(16000);h.events.alarm({name:'vrc-x-follower-queue'});await h.flush();assert.equal(h.store.xFollowerQueue.active[0].url,'https://x.com/oldcount');assert.equal(h.calls.length,calls);
     await h.command({type:'PAUSE_X_FOLLOWERS'});assert.equal(h.tabRows.size,0);assert.equal(h.store.xFollowerQueue.phase,'paused');
-    await h.command({type:'CLEAR'});assert.equal(h.store.xFollowerQueue.items.length,0);assert.equal(h.store.xFollowerQueue.active,null);
+    await h.command({type:'CLEAR'});assert.equal(h.store.xFollowerQueue.items.length,0);assert.equal(h.store.xFollowerQueue.active.length,0);
   }finally{h.stop();}
 });
 

@@ -4,6 +4,7 @@ import { followerRecords } from './x-followers.js';
 export const X_QUEUE_ALARM='vrc-x-follower-queue';
 export const X_QUEUE_INTERVAL=15000;
 export const X_QUEUE_TIMEOUT=60000;
+export const X_QUEUE_CONCURRENCY=3;
 const LIMIT=10000;
 export function followerTargets(profiles,metrics,accountId,userIds,now=Date.now()){
   const allowed=new Set(userIds),seen=new Set(),values=new Map(followerRecords(metrics,now).filter(r=>r.value.accountId===accountId).map(r=>[r.value.url,r.value]));
@@ -11,76 +12,117 @@ export function followerTargets(profiles,metrics,accountId,userIds,now=Date.now(
     const profile=readXCache(profiles,accountId,entry?.userId,now);
     if(profile&&allowed.has(profile.userId))for(const url of profile.urls)seen.add(url);
   }
-  return [...seen].map(url=>({url,observedAt:values.get(url)?.observedAt||0})).sort((a,b)=>a.observedAt-b.observedAt||a.url.localeCompare(b.url));
+  return [...seen].map(url=>({url,observedAt:values.get(url)?.observedAt||0,accounts:[accountId]})).sort((a,b)=>a.observedAt-b.observedAt||a.url.localeCompare(b.url));
 }
-const empty=()=>({schema:1,items:[],active:null,paused:false,phase:'idle',total:0,success:0,failed:0,skipped:0,consecutiveFailures:0,nextAt:0,retryAt:0,message:'',updatedAt:0});
+export const activeFollowerJobs=q=>Array.isArray(q?.active)?q.active:q?.active?[q.active]:[];
+const empty=()=>({schema:2,items:[],active:[],done:[],paused:false,phase:'idle',total:0,success:0,failed:0,skipped:0,consecutiveFailures:0,nextAt:0,retryAt:0,message:'',updatedAt:0});
+const timestamp=value=>Number.isSafeInteger(value)&&value>0?value:0;
+// Missing counts always precede refreshes, including requests from a user detail.
+// Interrupted attempts go behind untouched jobs in the same group.
+const priority=(a,b)=>Number(!!a.observedAt)-Number(!!b.observedAt)||Number(!!a.attemptedAt)-Number(!!b.attemptedAt)||(a.observedAt||0)-(b.observedAt||0)||Number(!!b.single)-Number(!!a.single)||a.url.localeCompare(b.url);
 // Every operation is serialized and the queue is persisted before opening a tab.
 // Alarms wake suspended MV3 workers; no queue state relies on a long-lived timer.
-export function createFollowerCollector({storage,tabs,alarms,allowed,isKnown,now=()=>Date.now(),uuid=()=>crypto.randomUUID()}){
+export function createFollowerCollector({storage,tabs,alarms,allowed,isKnown,latest=async()=>({}),now=()=>Date.now(),uuid=()=>crypto.randomUUID()}){
   let chain=Promise.resolve();
   const serial=work=>{const next=chain.then(work);chain=next.catch(()=>{});return next;};
-  async function read(){const raw=(await storage.get('xFollowerQueue')).xFollowerQueue;if(raw?.schema!==1)return empty();return {...empty(),...raw,items:(raw.items||[]).filter(j=>xProfileURL(j?.url)===j.url).slice(0,LIMIT)};}
+  async function read(){
+    const raw=(await storage.get('xFollowerQueue')).xFollowerQueue;
+    if(![1,2].includes(raw?.schema))return empty();
+    const seen=new Set(),valid=j=>j&&xProfileURL(j.url)===j.url&&!seen.has(j.url)&&seen.add(j.url);
+    const active=activeFollowerJobs(raw).filter(valid),items=(raw.items||[]).filter(valid).slice(0,LIMIT);
+    return {...empty(),...raw,schema:2,active,items,done:[...new Set((raw.done||[]).filter(url=>xProfileURL(url)===url))].slice(-LIMIT)};
+  }
   const save=q=>storage.set({xFollowerQueue:{...q,updatedAt:now()}});
   const wake=at=>alarms.create(X_QUEUE_ALARM,{when:Math.max(now()+1000,at)});
   const marked=a=>a.url+'#vrc-gathering='+a.token;
   function owns(tab,a){return (tab?.pendingUrl||tab?.url)===marked(a);}
   async function close(a){if(!Number.isInteger(a?.tabId))return;try{const tab=await tabs.get(a.tabId);if(owns(tab,a)&&!tab.active&&!tab.pinned)await tabs.remove(a.tabId);}catch{}}
-  async function finish(q,outcome,message,{keep=false}={}){
-    const active=q.active;q.active=null;q[outcome]++;q.consecutiveFailures=outcome==='failed'?q.consecutiveFailures+1:0;q.message=message;
-    q.phase='waiting';if(q.consecutiveFailures>=3){q.paused=true;q.items=q.items.map(j=>({...j,single:false}));q.phase='paused';q.message='3件続けて取得できなかったため停止しました。Xの表示状態を確認してから再開してください。';}
-    await save(q);if(!keep)await close(active);
+  function complete(q,job,outcome){
+    q.active=q.active.filter(a=>a.url!==job.url);q.items=q.items.filter(a=>a.url!==job.url);
+    q.done=[...new Set([...q.done,job.url])].slice(-LIMIT);q[outcome]++;
+    q.consecutiveFailures=outcome==='failed'?q.consecutiveFailures+1:0;
   }
-  async function stop(q,message,{keep=false,retryAt=0}={}){
-    const active=q.active;if(active)q.items.unshift({url:active.url,single:false});q.active=null;q.items=q.items.map(j=>({...j,single:false}));q.paused=true;q.phase='paused';q.message=message;q.retryAt=Math.max(q.retryAt||0,retryAt);await save(q);await alarms.clear(X_QUEUE_ALARM);if(!keep)await close(active);
+  async function stop(q,message,{keepTabId=null,retryAt=0}={}){
+    const active=q.active;q.active=[];
+    q.items=[...q.items,...active.map(a=>({url:a.url,accounts:a.accounts,observedAt:a.observedAt,requestedAt:a.requestedAt,attemptedAt:now()}))].map(j=>({...j,single:false}));
+    q.items.sort(priority);q.paused=true;q.phase='paused';q.message=message;q.retryAt=Math.max(q.retryAt||0,retryAt);
+    await save(q);await alarms.clear(X_QUEUE_ALARM);
+    for(const a of active)if(a.tabId!==keepTabId)await close(a);
+  }
+  async function finish(q,job,outcome,message){
+    complete(q,job,outcome);q.message=message;await save(q);await close(job);
+    if(q.consecutiveFailures>=3)await stop(q,'3件続けて取得できなかったため停止しました。Xの表示状態を確認してから再開してください。');
+  }
+  const runnable=(q,j)=>!q.paused||j.single;
+  async function schedule(q){
+    const pending=q.items.some(j=>runnable(q,j));
+    q.phase=q.active.length?'running':pending?'waiting':q.items.length?'paused':'complete';
+    if(q.phase==='complete')q.message='取得が完了しました。';
+    await save(q);
+    const times=q.active.map(a=>a.deadline);
+    if(pending&&q.active.length<X_QUEUE_CONCURRENCY)times.push(q.nextAt);
+    if(times.length)await wake(Math.min(...times));else await alarms.clear(X_QUEUE_ALARM);
+    return q;
   }
   async function run(q){
     if(!await allowed()){await stop(q,'Xの取得設定または接続権限が無効です。');return q;}
-    if(q.active){const a=q.active;let tab;
+    for(const a of [...q.active]){let tab;
       if(a.tabId==null){
         // Recover a tab created just before worker termination without touching existing user tabs.
         const matches=await tabs.query({url:'https://x.com/*'});tab=matches.find(t=>owns(t,a));if(tab){a.tabId=tab.id;await save(q);}
-        else {q.active=null;q.items.unshift({url:a.url,single:a.single});await save(q);}
+        else {q.active=q.active.filter(j=>j!==a);const {token,tabId,startedAt,deadline,...job}=a;q.items.push(job);await save(q);continue;}
       }else try{tab=await tabs.get(a.tabId);}catch{}
-      if(q.active){
+      if(q.active.includes(a)){
         if(!tab){await stop(q,'取得用タブが閉じられたため停止しました。');return q;}
         const destination=tab.pendingUrl||tab.url||'';
-        if(/^https:\/\/x\.com\/(?:i\/flow\/login|login|account\/access)(?:[/?#]|$)/i.test(destination)){await stop(q,'Xでログインまたはアカウントの確認が必要です。取得用タブを確認し、完了後に再開してください。',{keep:true});return q;}
-        if(destination&&destination!=='about:blank'&&!owns(tab,a)){await stop(q,'取得用タブが別のページに移動したため停止しました。',{keep:true});return q;}
-        if(now()>=a.deadline){await finish(q,'failed','@'+a.url.slice(14)+'：表示から数値を確認できませんでした。以前の値を保持します。');}
-        else {if(tab.status==='complete')void tabs.sendMessage(a.tabId,{type:'X_FOLLOWERS_READ'}).catch(()=>{});await wake(a.deadline);return q;}
+        if(/^https:\/\/x\.com\/(?:i\/flow\/login|login|account\/access)(?:[/?#]|$)/i.test(destination)){await stop(q,'Xでログインまたはアカウントの確認が必要です。取得用タブを確認し、完了後に再開してください。',{keepTabId:a.tabId});return q;}
+        if(destination&&destination!=='about:blank'&&!owns(tab,a)){await stop(q,'取得用タブが別のページに移動したため停止しました。',{keepTabId:a.tabId});return q;}
+        if(now()>=a.deadline){await finish(q,a,'failed','@'+a.url.slice(14)+'：表示から数値を確認できませんでした。以前の値を保持します。');if(q.consecutiveFailures>=3)return q;}
+        else if(tab.status==='complete')void tabs.sendMessage(a.tabId,{type:'X_FOLLOWERS_READ'}).catch(()=>{});
       }
     }
     if(q.retryAt>now()){q.phase='paused';q.paused=true;q.message='Xの制限を検出しました。'+new Date(q.retryAt).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'})+'（JST）'+' 以降に再開してください。';await save(q);return q;}
-    let index=q.items.findIndex(j=>!q.paused||j.single);
-    if(index<0){q.phase=q.items.length?'paused':'complete';if(!q.items.length)q.message='取得が完了しました。';await save(q);await alarms.clear(X_QUEUE_ALARM);return q;}
-    if(q.nextAt>now()){q.phase='waiting';await save(q);await wake(q.nextAt);return q;}
-    // Removed links are skipped; they do not become arbitrary browsing targets.
-    while(index>=0){const [job]=q.items.splice(index,1);if(!await isKnown(job.url)){q.skipped++;index=q.items.findIndex(j=>!q.paused||j.single);continue;}
-      q.active={...job,token:uuid(),tabId:null,startedAt:now(),deadline:now()+X_QUEUE_TIMEOUT};q.nextAt=now()+X_QUEUE_INTERVAL;q.phase='running';q.message='@'+job.url.slice(14)+' のプロフィールを確認中…';await save(q);await wake(q.active.deadline);
-      try{const tab=await tabs.create({url:marked(q.active),active:false});if(!Number.isInteger(tab?.id))throw Error('tab');q.active.tabId=tab.id;await save(q);}
-      catch{await finish(q,'failed','取得用タブを開けませんでした。');await wake(q.nextAt);}
-      return q;
+    if(q.nextAt>now()||q.active.length>=X_QUEUE_CONCURRENCY)return schedule(q);
+    // Refresh timestamps at dispatch: a manual tab or Sheets sync may have supplied a count.
+    const observations=await latest(q.items);
+    for(const job of [...q.items]){
+      job.observedAt=timestamp(Object.hasOwn(observations,job.url)?observations[job.url]:job.observedAt);
+      if(job.requestedAt&&job.observedAt>job.requestedAt)complete(q,job,'success');
     }
-    q.phase=q.items.length?'paused':'complete';await save(q);await alarms.clear(X_QUEUE_ALARM);return q;
+    q.items.sort(priority);
+    let index=q.items.findIndex(j=>runnable(q,j)),started=false;
+    // Removed links are skipped; they do not become arbitrary browsing targets.
+    while(index>=0&&q.active.length<X_QUEUE_CONCURRENCY){
+      const [job]=q.items.splice(index,1);
+      if(!await isKnown(job.url)){complete(q,job,'skipped');index=q.items.findIndex(j=>runnable(q,j));continue;}
+      const a={...job,token:uuid(),tabId:null,startedAt:now(),deadline:now()+X_QUEUE_TIMEOUT};q.active.push(a);
+      if(!started){q.nextAt=now()+X_QUEUE_INTERVAL;started=true;}
+      q.phase='running';q.message='@'+job.url.slice(14)+' のプロフィールを確認中…';await save(q);await wake(a.deadline);
+      try{const tab=await tabs.create({url:marked(a),active:false});if(!Number.isInteger(tab?.id))throw Error('tab');a.tabId=tab.id;await save(q);}
+      catch{await finish(q,a,'failed','取得用タブを開けませんでした。');break;}
+      index=q.items.findIndex(j=>runnable(q,j));
+    }
+    return schedule(q);
   }
   return {
-    enqueue:(targets,{single=false}={})=>serial(async()=>{
+    enqueue:(targets,{single=false,force=false}={})=>serial(async()=>{
       if(!await allowed())throw Error('収集設定でXの取得を有効にし、Xへの接続を許可してください。');
-      let q=await read();if(!q.active&&!q.items.length){const prior=q;q={...empty(),nextAt:prior.nextAt,retryAt:prior.retryAt};}
-      const unique=[...new Set(targets.map(v=>xProfileURL(v.url)).filter(Boolean))];let added=0;
-      for(const url of single?[...unique].reverse():unique){if(q.active?.url===url)continue;const existing=q.items.findIndex(j=>j.url===url);
-        if(existing>=0){if(single){const [j]=q.items.splice(existing,1);q.items.unshift({...j,single:true});}continue;}
+      let q=await read();if(!q.active.length&&!q.items.length){const prior=q;q={...empty(),nextAt:prior.nextAt,retryAt:prior.retryAt};}
+      const unique=new Map();for(const v of targets){const url=xProfileURL(v.url);if(url){const old=unique.get(url);unique.set(url,{observedAt:old?Math.min(old.observedAt,timestamp(v.observedAt)):timestamp(v.observedAt),accounts:[...new Set([...(old?.accounts||[]),...(v.accounts||[])])]});}}let added=0;
+      for(const [url,{observedAt,accounts}] of unique){const existing=q.active.find(j=>j.url===url)||q.items.find(j=>j.url===url);
+        if(existing){existing.accounts=[...new Set([...(existing.accounts||[]),...accounts])];existing.observedAt=Math.min(timestamp(existing.observedAt),observedAt);if(single)existing.single=true;continue;}
+        if(q.done.includes(url)&&!(single&&force))continue;
         if(q.items.length>=LIMIT)throw Error('取得待ちが上限に達しています。完了後にもう一度実行してください。');
-        const job={url,single};if(single)q.items.unshift(job);else q.items.push(job);q.total++;added++;
+        q.done=q.done.filter(v=>v!==url);q.items.push({url,single,accounts,observedAt,requestedAt:now()});q.total++;added++;
       }
       if(!single&&q.retryAt<=now()){q.paused=false;q.consecutiveFailures=0;}await save(q);await run(q);return {ok:true,added,queue:q};
     }),
-    tick:()=>serial(async()=>{const q=await read();if(q.active||q.items.length)return run(q);await alarms.clear(X_QUEUE_ALARM);return q;}),
-    observed:(url,tabId)=>serial(async()=>{const q=await read();if(q.active?.url===url&&q.active.tabId===tabId){await finish(q,'success','@'+url.slice(14)+' を更新しました。');return run(q);}const index=q.items.findIndex(j=>j.url===url);if(index>=0){q.items.splice(index,1);q.success++;q.message='@'+url.slice(14)+' を開いたタブから更新しました。';await save(q);return run(q);}}),
-    blocked:(tabId,reason)=>serial(async()=>{const q=await read();if(q.active?.tabId!==tabId)return;await stop(q,reason==='rate-limit'?'Xの利用制限を検出したため停止しました。時間を空けて再開してください。':'Xでログインまたは確認操作が必要です。取得用タブを確認してください。',{keep:true,retryAt:reason==='rate-limit'?now()+60000:0});}),
+    tick:()=>serial(async()=>{const q=await read();if(q.active.length||q.items.length)return run(q);await alarms.clear(X_QUEUE_ALARM);return q;}),
+    observed:(url,tabId)=>serial(async()=>{const q=await read(),job=q.active.find(j=>j.url===url)||q.items.find(j=>j.url===url);if(job){await finish(q,job,'success','@'+url.slice(14)+' を更新しました。');return run(q);}}),
+    blocked:(tabId,reason)=>serial(async()=>{const q=await read();if(!q.active.some(j=>j.tabId===tabId))return;await stop(q,reason==='rate-limit'?'Xの利用制限を検出したため停止しました。時間を空けて再開してください。':'Xでログインまたは確認操作が必要です。取得用タブを確認してください。',{keepTabId:tabId,retryAt:reason==='rate-limit'?now()+60000:0});}),
     pause:()=>serial(async()=>{const q=await read();await stop(q,'取得を停止しました。未処理のプロフィールは再開時に続けます。');return {ok:true};}),
     resume:()=>serial(async()=>{const q=await read();if(q.retryAt>now())throw Error('Xの制限による待機中です。1分以上空けて再開してください。');q.paused=false;q.consecutiveFailures=0;await save(q);await run(q);return {ok:true};}),
-    clear:()=>serial(async()=>{const q=await read();await save(empty());await alarms.clear(X_QUEUE_ALARM);await close(q.active);}),
-    tabChanged:tabId=>serial(async()=>{const q=await read();if(q.active?.tabId===tabId)return run(q);})
+    clear:()=>serial(async()=>{const q=await read();await save(empty());await alarms.clear(X_QUEUE_ALARM);for(const a of q.active)await close(a);}),
+    tabChanged:tabId=>serial(async()=>{const q=await read();if(q.active.some(j=>j.tabId===tabId))return run(q);})
   };
 }
