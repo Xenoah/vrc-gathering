@@ -185,3 +185,13 @@ Chromiumでchrome.storageの変更通知を発生させ、入力途中のメモ�
 - 3,000地点・2,999経路の合成データを描画し、地点が省略されずCanvasサイズがビューポート内に収まることを確認。ユーザー実データや端末でのフレームレート測定ではありません。
 - 従来の円形ネットワーク・アニメーション・通常ホイール／ドラッグ／ピンチ、DB移行、ローカル画像キャッシュと同期対象外の維持を回帰検証。
 - 収集・通信・DB・GAS形式・権限は変更していません。表示設定はlocalStorageに端末内保存。実VRChat／GASとの通信やユーザー端末のChromeへの導入は今回行っていません。
+
+
+## 公式ユーザーノート（v0.13.0 / 2026-10-25）
+
+- Nodeテスト180件。追加9件で、一覧・個別応答の所有者／対象者照合、本文未取得と空欄の区別、形式不正・長さ・日時、不要フィールドの除外、同一本文のスナップショット更新・変化時だけの履歴、アカウント分離・取得キャッシュ上限を検証。
+- 実ワーカーのモックで205件を複数巡回に分けて取得し、一覧欠落の個別確認、本文欠落時の保持、空欄の記録、取得前後のアカウント切替・429待機・記録削除を確認。公式APIへはGETのみを使用します。
+- GAS本体をSheetsモックで実行し、VRCUserNotes／VRCUserNoteHistory、本文の数式化防止、同一行への再送、古い値の再送による復活防止、最新値と履歴の保存期間の違いを確認。旧GASでは未送信、新GASへの更新後は送信・空の端末へ復元できることを同期アダプターから検証。
+- Chromiumで実IndexedDBとワーカーを使い、公式本文の取得・再確認・改行／HTML文字列・変更履歴・空欄・本文欠落・アカウント切替・古い非同期応答の抑止・再読み込み後の保持・記録JSON・保存期間・390px表示を確認。公式編集用のリンクと読み取り専用表示を確認しました。
+- 参照仕様：[User Notes API](https://github.com/vrchatapi/specification/blob/850f01edf968dc4baa13c09e96d8a8d75686a3eb/openapi/components/paths/users.yaml)、[UserNote](https://github.com/vrchatapi/specification/blob/850f01edf968dc4baa13c09e96d8a8d75686a3eb/openapi/components/schemas/UserNote.yaml)、[User.note](https://github.com/vrchatapi/specification/blob/850f01edf968dc4baa13c09e96d8a8d75686a3eb/openapi/components/schemas/User.yaml)。これは公開コミュニティ仕様です。実ログインアカウントでのAPI応答・公開GAS・ユーザー端末のChromeでの導入は未確認です。
+- DB4・HTTP／レコードスキーマ2を維持し、18種類の同期へ拡張。GAS両ファイルの更新・setup・再デプロイが必要です。

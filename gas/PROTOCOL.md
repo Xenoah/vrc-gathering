@@ -13,7 +13,7 @@ GASの `/exec` へPOSTし、`Content-Type: text/plain;charset=UTF-8` のJSONを�
 ```
 
 ```json
-{"protocol":2,"ok":true,"datasetId":"UUID","protocols":[1,2],"recordSchemas":[1,2],"operations":["upsert"],"kinds":["friends","events","worlds","runs","accounts","visits","encounters","profiles","xFollowers","segments","crowd","coverage","followerHistory","annotations","views","reports"],"features":["changeIntervals","monthlyArchives","rangePull"],"maxBatch":100,"retentionDays":0,"serverTime":1792800000000}
+{"protocol":2,"ok":true,"datasetId":"UUID","protocols":[1,2],"recordSchemas":[1,2],"operations":["upsert"],"kinds":["friends","events","worlds","runs","accounts","visits","encounters","profiles","xFollowers","segments","crowd","coverage","followerHistory","annotations","views","reports","userNotes","userNoteHistory"],"features":["changeIntervals","monthlyArchives","rangePull"],"maxBatch":100,"retentionDays":0,"serverTime":1792800000000}
 ```
 
 以後の要求には `protocol:2`、`token`、`datasetId` を必ず付けます。
@@ -63,6 +63,8 @@ GASの `/exec` へPOSTし、`Content-Type: text/plain;charset=UTF-8` のJSONを�
 | accounts | アカウントID | 所有者の表示名・最終観測 |
 | visits | startedAt | 自分の訪問・状態区間。startedAt / lastSeenAt / endedAt / presence / location |
 | xFollowers | Xのハンドル（小文字） | URL・フォロワー数・確認日時・概数の区別・取得元 |
+| userNotes | userId | 公式ユーザーノートの最新値と確認日時 |
+| userNoteHistory | userId + `:` + changedAt | 公式ノートの本文変化を確認した時点の記録 |
 | profiles | ユーザーID | Xプロフィールの確認日時・公開URL（最大5件） |
 | encounters | userId + `:` + startedAt | 同席観測区間。visitStartedAt / lastSeenAt / endedAt / relation / location / otherInstanceId |
 
@@ -156,9 +158,22 @@ VRCArchivesはmonth、spreadsheet_id、rows、max_revision、max_observed_atを�
 featuresにrangePullがある場合、別カーソルで次の要求を送れます。
 
 ```json
-{"protocol":2,"action":"range","datasetId":"UUID","token":"YOUR_SYNC_TOKEN","accountId":"usr_example0001","since":1790000000000,"until":1791000000000,"cursor":0,"limit":100,"kinds":["segments","crowd","coverage","followerHistory","events","runs","visits","encounters","worlds","annotations","views","reports"]}
+{"protocol":2,"action":"range","datasetId":"UUID","token":"YOUR_SYNC_TOKEN","accountId":"usr_example0001","since":1790000000000,"until":1791000000000,"cursor":0,"limit":100,"kinds":["segments","crowd","coverage","followerHistory","events","runs","visits","encounters","worlds","annotations","views","reports","userNotes","userNoteHistory"]}
 ```
 
 区間はobservedAtがsince以降、startedAt（なければobservedAt）がuntilより前を候補にします。画面で確認区間を選択期間へ切り詰めます。最新プロフィール・保存条件・メモは時刻制限とは独立です。応答はrecords/cursor/hasMore/datasetId。フィルター前の更新番号でページを進めるため、recordsが空でもhasMoreなら継続してください。条件を変えたらcursor=0に戻します。通常同期のカーソルとは共有しません。
 
 端末はrange応答をarchiveCacheへ保存し、通常の送信対象には加えません。24時間後の整理対象です。GASのRETENTION_DAYSが0以外の場合は日次削除と受信下限が適用され、月別整理が保存期間を延長することはありません。
+
+
+## 公式ユーザーノート（v0.13.0）
+
+HTTP・レコードスキーマ2、IndexedDBバージョン4を維持し、hello.kindsにuserNotesとuserNoteHistoryを追加します。両方ともresearchストアへ保存します。
+
+valueは `accountId`, `userId`, `observedAt`, `changedAt`, `note`, `noteId`, `createdAt`, `displayName`, `source` です。sourceは `vrchat-user-note` 固定、userIdは対象ユーザー、accountIdはノートを書いたログイン所有者。noteは公式本文をそのまま保持する0〜8,000 UTF-16文字です。空文字は確認済みの未設定を意味し、欠落・nullは受け付けません。noteIdは `unt_...` または未取得の空文字、createdAtは公式作成日時または未取得のnull。個別プロフィールでは本文しか確認できないため、変更時に古いノートID・公式作成日時を推定で引き継ぎません。
+
+observedAtは確認時刻、changedAtは現在の本文を初めて記録した確認時刻です。本文が同じならuserNotesの同じ行のobservedAtのみ更新し、履歴は追加しません。表示名やノートIDの補完も本文変更とは数えません。本文変更時にはuserNotesを更新し、`userNoteHistory:<accountId>:<userId>:<changedAt>` を追加します。公式の編集時刻を表すものではありません。複数端末の同時観測には既存の日時優先・同時刻のcanonical JSON比較を使います。
+
+userNotesはARCHIVE_KINDSに含め、保存期間・pullのsinceから除外します。userNoteHistoryはHISTORY_KINDSに含め、通常の保持期間・月別アーカイブを適用します。最新値が空になったことも日時優先でマージし、古い値の再送で戻しません。APIの取得失敗・ノート一覧にないことだけでは空欄のレコードを生成しません。
+
+公式APIの読み取りはGET /userNotes?n=100&offset=... とGET /users/{userId}。一覧のuserIdが所有者と一致すること、個別応答のidが対象者と一致すること、取得前後のauth/userが同じ所有者であることを確認します。ノートを編集するPOSTは実装しません。APIの生レスポンス・Cookie・画像URLは保存しません。

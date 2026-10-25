@@ -44,15 +44,16 @@ async function harness(handler, allowCloud = true){
   const followerQueue=new vm.SourceTextModule(await fs.readFile(new URL('x-follower-collector.js',root),'utf8'),{context});await followerQueue.link(spec=>spec==='./x-followers.js'?followers:xProfiles);
   const series=new vm.SourceTextModule(await fs.readFile(new URL('observation-series.js',root),'utf8'),{context});await series.link(()=>format);
   const research=new vm.SourceTextModule(await fs.readFile(new URL('research-model.js',root),'utf8'),{context});await research.link(spec=>spec==='./sync-format.js'?format:series);
+  const notes=new vm.SourceTextModule(await fs.readFile(new URL('user-notes.js',root),'utf8'),{context});await notes.link(()=>format);
   const bg=new vm.SourceTextModule(await fs.readFile(new URL('background.js',root),'utf8'),{context});
-  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:spec==='./x-followers.js'?followers:spec==='./x-follower-collector.js'?followerQueue:spec==='./observation-series.js'?series:spec==='./research-model.js'?research:db);await bg.evaluate();
+  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:spec==='./x-followers.js'?followers:spec==='./x-follower-collector.js'?followerQueue:spec==='./observation-series.js'?series:spec==='./research-model.js'?research:spec==='./user-notes.js'?notes:db);await bg.evaluate();
   async function flush(){for(let i=0;i<15;i++)await new Promise(setImmediate);}
   await flush();
   const command=message=>new Promise(resolve=>events.message(message,{id:'testextension',url:'chrome-extension://testextension/dashboard.html'},resolve));
   const start=async()=>{assert.equal((await command({type:'SAVE',settings:{contact:'https://github.com/example'}})).ok,true);await command({type:'START'});await flush();};
   return {store,saved,calls,alarms,scripts,tabRows,command,start,flush,advance:ms=>{now+=ms;},stop:()=>{closed=true;},events};
 }
-const good=url=>({body:url.pathname.endsWith('/auth/user')?owner:url.pathname.endsWith('/friends')?(url.searchParams.get('offline')==='true'?[]:[online]):{id:wid,name:'架空ワールド',capacity:16,unityPackages:[{assetUrl:'SECRET_ASSET'}]}});
+const good=url=>({body:url.pathname.endsWith('/userNotes')?[]:url.pathname.includes('/users/')?{id:fid,displayName:online.displayName,note:''}:url.pathname.endsWith('/auth/user')?owner:url.pathname.endsWith('/friends')?(url.searchParams.get('offline')==='true'?[]:[online]):{id:wid,name:'架空ワールド',capacity:16,unityPackages:[{assetUrl:'SECRET_ASSET'}]}});
 
 test('full cycle stores normalized observations, GET-only, credentials handled by browser',async()=>{
   const h=await harness(good);await h.start();
@@ -99,7 +100,7 @@ test('cloud configuration requires optional Google permissions and cannot alter 
   assert.equal(response.ok,false);assert.match(response.error,/権限/);assert.equal(h.store.cloudSync,undefined);assert.equal(h.calls.length,0);h.stop();
 });
 test('cloud setup schedules sync, uses no VRChat cookies, and clearing local records disables sync',async()=>{
-  const h=await harness((url,n,options)=>({body:JSON.parse(options.body).action==='hello'?{protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles','xFollowers','segments','crowd','coverage','followerHistory','annotations','views','reports'],retentionDays:0,maxBatch:100}:{protocol:2,ok:true,datasetId:'test',records:[],cursor:0,hasMore:false}}));
+  const h=await harness((url,n,options)=>({body:JSON.parse(options.body).action==='hello'?{protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles','xFollowers','segments','crowd','coverage','followerHistory','annotations','views','reports','userNotes','userNoteHistory'],retentionDays:0,maxBatch:100}:{protocol:2,ok:true,datasetId:'test',records:[],cursor:0,hasMore:false}}));
   const response=await h.command({type:'SAVE_SYNC',settings:{enabled:true,endpoint:'https://script.google.com/macros/s/test/exec',token:'test_token_0123456789_abcdefghijklmnopqrstuvwxyz'}});
   assert.equal(response.ok,true);await h.flush();assert.equal(h.store.cloudState.phase,'ready');
   assert.equal(h.calls.length,2);assert.equal(h.calls[0].options.credentials,'omit');assert.equal(h.calls[0].options.method,'POST');
@@ -120,7 +121,7 @@ test('image collection is opt-in and candidates are queued only after the accoun
 });
 
 test('connection test command uses saved settings and performs one hello without enabling sync',async()=>{
-  const hello={protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles','xFollowers','segments','crowd','coverage','followerHistory','annotations','views','reports'],retentionDays:0,maxBatch:100};
+  const hello={protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles','xFollowers','segments','crowd','coverage','followerHistory','annotations','views','reports','userNotes','userNoteHistory'],retentionDays:0,maxBatch:100};
   const h=await harness(()=>({body:hello}));
   await h.command({type:'SAVE_SYNC',settings:{enabled:false,endpoint:'https://script.google.com/macros/s/test/exec',token:'test_token_0123456789_abcdefghijklmnopqrstuvwxyz'}});
   assert.equal(h.calls.length,0);const response=await h.command({type:'TEST_SYNC'});assert.equal(response.connected,true);assert.equal(h.calls.length,1);
@@ -309,4 +310,37 @@ test('bulk follower collection opens known X pages in priority order and single-
     await h.command({type:'PAUSE_X_FOLLOWERS'});assert.equal(h.tabRows.size,0);assert.equal(h.store.xFollowerQueue.phase,'paused');
     await h.command({type:'CLEAR'});assert.equal(h.store.xFollowerQueue.items.length,0);assert.equal(h.store.xFollowerQueue.active,null);
   }finally{h.stop();}
+});
+
+test('official notes are collected as confirmed change points, and missing list rows require an individual empty confirmation',async()=>{
+  let text='公式ノート',listed=true,missingField=false;
+  const h=await harness(url=>url.pathname.endsWith('/userNotes')?{body:listed?[{id:'unt_note000001',userId:uid,targetUserId:fid,note:text,createdAt:'2026-01-01T00:00:00Z',targetUser:{displayName:online.displayName}}]:[]}:url.pathname.includes('/users/')?{body:{id:fid,...(!missingField?{note:text}:{})}}:good(url));
+  try{
+    await h.start();const notes=()=>h.saved.research.filter(r=>r.kind==='userNotes'),history=()=>h.saved.research.filter(r=>r.kind==='userNoteHistory');assert.equal(notes()[0].value.note,'公式ノート');assert.equal(history().length,1);
+    h.advance(31*60000);await h.command({type:'POLL'});await h.flush();assert.equal(history().length,1);
+    text='変更後';h.advance(31*60000);await h.command({type:'POLL'});await h.flush();assert.equal(history().length,2);assert.equal(notes()[0].value.note,text);
+    listed=false;missingField=true;h.advance(31*60000);await h.command({type:'POLL'});await h.flush();assert.equal(notes()[0].value.note,text);assert.equal(history().length,2);assert.ok(h.store.accountMeta[uid].noteScan.error);
+    missingField=false;text='';h.advance(31*60000);await h.command({type:'POLL'});await h.flush();assert.equal(notes()[0].value.note,'');assert.equal(history().length,3);
+    assert.ok(h.calls.filter(c=>new URL(c.url).pathname.includes('user')).every(c=>c.options.method==='GET'));
+  }finally{h.stop();}
+});
+test('official note pagination continues on the next poll without losing earlier pages or repeating history',async()=>{
+  const samples=Array.from({length:205},(_,i)=>({id:'unt_note0000'+i,userId:uid,targetUserId:'usr_target0000'+i,note:'Note '+i,createdAt:'2026-01-01T00:00:00Z'}));
+  const h=await harness(url=>url.pathname.endsWith('/userNotes')?{body:samples.slice(Number(url.searchParams.get('offset')),Number(url.searchParams.get('offset'))+100)}:good(url));
+  try{await h.start();assert.equal(h.store.accountMeta[uid].noteScan.offset,200);assert.equal(h.saved.research.filter(r=>r.kind==='userNotes').length,200);h.advance(61000);await h.command({type:'POLL'});await h.flush();assert.equal(h.store.accountMeta[uid].noteScan.offset,0);assert.equal(h.saved.research.filter(r=>r.kind==='userNoteHistory').length,205);assert.equal(h.store.accountMeta[uid].noteScan.seen.length,0);}finally{h.stop();}
+});
+test('official note detail checks enforce identity, retain saved content on failure, use cached results and never write the VRChat API',async()=>{
+  let text='詳細ノート',wrongOwner=false,missing=false;const h=await harness(url=>url.pathname.endsWith('/auth/user')?{body:wrongOwner?{...owner,id:'usr_anotheraccount01'}:owner}:url.pathname.includes('/users/')?{body:{id:fid,...(!missing?{note:text}:{}),authToken:'SECRET'}}:good(url));
+  try{
+    h.store.accountMeta={[uid]:{displayName:'Owner'}};h.saved.friends.push({accountId:uid,id:fid});await h.command({type:'SAVE',settings:{contact:'https://github.com/example'}});
+    const message={type:'USER_NOTE',accountId:uid,userId:fid};const first=await h.command(message);assert.equal(first.ok,true);assert.equal(first.record.note,text);assert.equal(h.calls.length,3);assert.ok(!JSON.stringify(first).includes('SECRET'));
+    assert.equal((await h.command(message)).cached,true);assert.equal(h.calls.length,3);assert.equal((await h.command({...message,readOnly:true})).record.note,text);
+    h.advance(61000);missing=true;const failed=await h.command({...message,force:true});assert.equal(failed.ok,false);assert.equal(failed.record.note,text);
+    missing=false;wrongOwner=true;const wrong=await h.command({...message,force:true});assert.equal(wrong.ok,false);assert.match(wrong.error,/アカウント/);assert.equal(h.saved.research.filter(r=>r.kind==='userNoteHistory').length,1);
+    assert.ok(h.calls.every(c=>c.options.method==='GET'));await h.command({type:'CLEAR'});assert.equal(h.saved.research.filter(r=>r.kind==='userNotes').length,0);assert.deepEqual(Object.keys(h.store.userNoteChecks),[]);
+  }finally{h.stop();}
+});
+test('official notes reject switched identity after fetching and honor rate limiting without erasing the snapshot',async()=>{
+  let identities=0,mode='switch';const h=await harness(url=>url.pathname.endsWith('/auth/user')?{body:++identities===2&&mode==='switch'?{...owner,id:'usr_anotheraccount01'}:owner}:url.pathname.includes('/users/')?mode==='rate'?{status:429,headers:{'Retry-After':'120'},body:{}}:{body:{id:fid,note:'Never save'}}:good(url));
+  try{h.store.accountMeta={[uid]:{displayName:'Owner'}};h.saved.friends.push({accountId:uid,id:fid});await h.command({type:'SAVE',settings:{contact:'https://github.com/example'}});const msg={type:'USER_NOTE',accountId:uid,userId:fid};assert.equal((await h.command(msg)).ok,false);assert.equal(h.saved.research.filter(r=>r.kind==='userNotes').length,0);mode='rate';assert.equal((await h.command(msg)).ok,false);assert.ok(h.store.state.cooldownUntil);const count=h.calls.length;await h.command(msg);assert.equal(h.calls.length,count);}finally{h.stop();}
 });

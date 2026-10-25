@@ -9,10 +9,11 @@ import { normalizeRecord, mergeRecord } from './sync-format.js';
 import { createFollowerCollector, followerTargets, X_QUEUE_ALARM } from './x-follower-collector.js';
 import { X_FOLLOWER_ORIGINS, followerRecords, mergeFollowerCache } from './x-followers.js';
 import { collectionSeries, stopSeries, updateSeries, compressRun } from './observation-series.js';
+import { officialNote, noteChanges, noteChecks, NOTE_SCAN_INTERVAL, NOTE_CACHE_TTL } from './user-notes.js';
 import { reportSummary, scheduledBoundary, DAY } from './research-model.js';
 
 const updateAccounts = createAccountUpdater(chrome.storage.local);
-let collectorPromise,activeReports;
+let collectorPromise,activeReports,noteGeneration=0;
 function collector(){return collectorPromise||=(async()=>{const saved=await chrome.storage.local.get('collectorId');if(saved.collectorId)return saved.collectorId;const id='col_'+crypto.randomUUID().replaceAll('-','');await chrome.storage.local.set({collectorId:id});return id;})();}
 async function recordStop(reason,accountId){if(!accountId)return;const config=await configuration(),collectorId=await collector(),previous=await activeSeries(accountId),at=previous.filter(r=>r.value.collectorId===collectorId).reduce((at,r)=>Math.max(at,r.value.lastSeenAt+1),Date.now());await mergeSyncRecords(stopSeries(previous,{accountId,collectorId,at,pollSeconds:config.pollSeconds,reason}));}
 async function makeReports({accountId='',viewId='',force=false}={}){
@@ -116,7 +117,7 @@ async function ensureUA(config) {
   await chrome.declarativeNetRequest.updateDynamicRules({removeRuleIds:[1,2],addRules:rules});
 }
 async function request(path, signal, progress, {quiet=false}={}) {
-  if (!(path === '/auth/user' || /^\/auth\/user\/friends\?n=100&offset=\d+&offline=(true|false)$/.test(path) || /^\/worlds\/wrld_[a-zA-Z0-9-]{8,64}$/.test(path) || /^\/profile\/(usr_[a-zA-Z0-9-]{8,64}|[a-zA-Z0-9]{8,32})$/.test(path))) throw new ApiError('許可されていないAPIパスです。');
+  if (!(path === '/auth/user' || /^\/auth\/user\/friends\?n=100&offset=\d+&offline=(true|false)$/.test(path) || /^\/worlds\/wrld_[a-zA-Z0-9-]{8,64}$/.test(path) || /^\/userNotes\?n=100&offset=\d+$/.test(path) || /^\/users\/(usr_[a-zA-Z0-9-]{8,64}|[a-zA-Z0-9]{8,32})$/.test(path) || /^\/profile\/(usr_[a-zA-Z0-9-]{8,64}|[a-zA-Z0-9]{8,32})$/.test(path))) throw new ApiError('許可されていないAPIパスです。');
   signal.throwIfAborted();
   const s = await state();
   if (s.cooldownUntil > Date.now()) throw new ApiError('APIの待機時間中です。', 429, String((s.cooldownUntil - Date.now()) / 1000));
@@ -168,6 +169,31 @@ async function pages(offline, offset, maximum, signal, me) {
   }
   return { observations, images, complete, nextOffset: offset };
 }
+async function collectUserNotes(signal,accountId,meta) {
+  const prior=meta.noteScan||{},at=Date.now();
+  if(!prior.offset&&!prior.pending?.length&&at-(prior.completedAt||0)<NOTE_SCAN_INTERVAL)return {samples:[],scan:prior};
+  const scan={...prior,seen:[...(prior.seen||[])],pending:[...(prior.pending||[])],attemptedAt:at,error:''},samples=[];
+  try{
+    if(prior.offset||at-(prior.completedAt||0)>=NOTE_SCAN_INTERVAL){
+      let offset=prior.offset||0;if(!offset)scan.seen=[];
+      for(let page=0;page<2;page++){
+        if(offset>50000)throw Error('公式ノートの一覧が大きいため取得を中断しました。');
+        const raw=await request(`/userNotes?n=100&offset=${offset}`,signal,'公式ユーザーノートを取得中：'+(offset+1)+'件目から');
+        if(!Array.isArray(raw)||raw.length>100)throw Error('公式ノート一覧の応答形式が不正です。');
+        const rows=raw.map(r=>officialNote(r,accountId,Date.now()));samples.push(...rows);scan.seen.push(...rows.map(r=>r.userId));offset+=raw.length;
+        if(raw.length<100){
+          const seen=new Set(scan.seen),saved=await researchKind('userNotes',accountId);
+          scan.pending=[...new Set([...scan.pending.filter(id=>!seen.has(id)),...saved.filter(r=>r.value.note&&!seen.has(r.value.userId)).map(r=>r.value.userId)])];
+          offset=0;scan.completedAt=Date.now();scan.seen=[];break;
+        }
+      }
+      scan.offset=offset;
+    }
+    // Missing from a mutable paginated list is not proof of deletion. Confirm individually.
+    if(scan.pending.length){const userId=scan.pending[0];try{const raw=await request('/users/'+userId,signal,'公式ノートの変更を確認中');samples.push(officialNote(raw,accountId,Date.now(),{targetId:userId}));}catch(error){if(signal.aborted||[401,403,429].includes(error.status))throw error;scan.error=error.message;}scan.pending.shift();}
+    return {samples,scan};
+  }catch(error){if(signal.aborted||[401,403,429].includes(error.status))throw error;return {samples:[],scan:{...prior,attemptedAt:at,error:error.message}};}
+}
 async function collect(signal) {
   const config = await configuration(), before = await state();
   if (!config.enabled) return;
@@ -205,6 +231,7 @@ async function collect(signal) {
         worlds.push({ accountId, id, name: '', authorName: '', capacity: null, observedAt: Date.now(), retryAt: Date.now() + 86400000 });
       }
     }
+    const notes=await collectUserNotes(signal,accountId,meta);nextMeta.noteScan=notes.scan;
     // Verify identity again before writing: never attribute another browser account's response to the first.
     const finalMe = await identity(signal, 'アカウントを再確認して保存中');
     if (finalMe.id !== accountId) throw new ApiError('取得中にアカウントが切り替わりました。この巡回は保存せず、停止しました。', 403);
@@ -219,12 +246,12 @@ async function collect(signal) {
     const connections=reconcileConnections(previousVisits,previousEncounters,[me.self,finalMe.self],allowed,accountId,{pollSeconds:config.pollSeconds,completedAt,roster});
     const collectorId=await collector(),research=collectionSeries(await activeSeries(accountId),{accountId,collectorId,pollSeconds:config.pollSeconds,samples:[...changes.records,me.self,finalMe.self],completedAt,rosterSize:roster?.size||0,complete:onlinePage.complete&&!(meta.onlineOffset||0)});
     const compactRun=compressRun(await list('runs',accountId),run,collectorId,config.pollSeconds);
-    await commit(changes.records, changes.events, worlds, compactRun, connections,research);
+    await commit(changes.records, changes.events, worlds, compactRun, connections,[...research,...noteChanges(await researchKind('userNotes',accountId),notes.samples)]);
     if((await chrome.storage.local.get('imageCacheSettings')).imageCacheSettings?.enabled)await enqueueImages(accountId,images.filter(v=>v&&(v.kind==='world'||!roster||roster.has(v.id))),completedAt);
     nextMeta.lastSuccessAt = completedAt;
     await updateAccounts(accounts => ({...accounts, [accountId]:{...accounts[accountId], ...nextMeta}}));
     await prune(config.retentionDays);
-    const remaining = [!onlinePage.complete ? `オンラインの続き ${nextMeta.onlineOffset}件目〜` : '', nextMeta.offlineOffset ? `名簿の続き ${nextMeta.offlineOffset}件目〜` : '', run.worldNamesPending ? `ワールド名 ${run.worldNamesPending}件` : ''].filter(Boolean);
+    const remaining = [notes.scan.error?'公式ノート：'+notes.scan.error:notes.scan.offset?'公式ノートの続き '+notes.scan.offset+'件目〜':notes.scan.pending?.length?'公式ノートの個別確認 '+notes.scan.pending.length+'件':'',!onlinePage.complete ? `オンラインの続き ${nextMeta.onlineOffset}件目〜` : '', nextMeta.offlineOffset ? `名簿の続き ${nextMeta.offlineOffset}件目〜` : '', run.worldNamesPending ? `ワールド名 ${run.worldNamesPending}件` : ''].filter(Boolean);
     await patchState({ phase: 'ready', message: remaining.length ? `保存完了。次回取得：${remaining.join('／')}` : '取得・保存が完了しました。',
       accountId, accountName: me.displayName, lastSuccessAt: completedAt, failures: 0, cooldownUntil: 0,
       lastRun: run, rosterCount: finalMe.friends?.length ?? null });
@@ -301,6 +328,34 @@ async function lookupXProfile({accountId,userId,force=false}) {
   }).finally(()=>{activeProfile=null;profileController=null;});
   return activeProfile;
 }
+async function lookupUserNote({accountId,userId,force=false,readOnly=false}) {
+  const epoch=noteGeneration;
+  if(typeof accountId!=='string'||typeof userId!=='string'||!USER_ID.test(accountId)||!USER_ID.test(userId))throw Error('ユーザーIDが不正です。');
+  const saved=await chrome.storage.local.get(['accountMeta','userNoteChecks']);
+  if(!saved.accountMeta?.[accountId])throw Error('記録済みアカウントを選択してください。');
+  const records=await researchKind('userNotes',accountId),record=records.find(r=>r.value.userId===userId)?.value||null;
+  const history=(await researchKind('userNoteHistory',accountId)).filter(r=>r.value.userId===userId).map(r=>r.value).sort((a,b)=>b.changedAt-a.changedAt);
+  const checkedAt=saved.userNoteChecks?.[accountId+':'+userId]||0,result={record,history,checkedAt};
+  if(profileResetting||epoch!==noteGeneration)throw Error('記録を削除中です。');
+  if(readOnly)return {ok:true,...result,local:true};
+  if(record&&checkedAt<=Date.now()&&Date.now()-checkedAt<(force===true?60000:NOTE_CACHE_TTL))return {ok:true,...result,cached:true};
+  if(activeProfile||activeRun)return {ok:true,...result,busy:true};
+  const abort=new AbortController();profileController=abort;
+  activeProfile=(async()=>{
+    if(!record&&!(await list('friends',accountId)).some(f=>f.id===userId))throw Error('このアカウントで記録されたユーザーを選択してください。');
+    const config=await configuration();if(!validContact(config.contact))throw Error('収集設定で連絡先を保存してください。');
+    await imageCollector.idle();abort.signal.throwIfAborted();await ensureUA(config);
+    const me=await identity(abort.signal,'公式ノートのアカウント確認',{quiet:true});if(me.id!==accountId)throw Error('表示アカウントとVRChatのログインアカウントが異なります。');
+    const raw=await request('/users/'+userId,abort.signal,'公式ユーザーノートを取得中',{quiet:true}),sample=officialNote(raw,accountId,Date.now(),{targetId:userId});
+    const after=await identity(abort.signal,'公式ノートのアカウント再確認',{quiet:true});if(after.id!==accountId)throw Error('取得中にアカウントが切り替わったため、ノートを保存しませんでした。');
+    abort.signal.throwIfAborted();const changes=noteChanges(await researchKind('userNotes',accountId),[sample]);await mergeSyncRecords(changes);
+    const cache=(await chrome.storage.local.get('userNoteChecks')).userNoteChecks||{};await chrome.storage.local.set({userNoteChecks:noteChecks(cache,accountId,userId,sample.observedAt)});void syncQuietly();
+    return {ok:true,record:(await researchKind('userNotes',accountId)).find(r=>r.value.userId===userId)?.value||null,history:(await researchKind('userNoteHistory',accountId)).filter(r=>r.value.userId===userId).map(r=>r.value).sort((a,b)=>b.changedAt-a.changedAt),checkedAt:sample.observedAt};
+  })().catch(async error=>{
+    if(error.status===429||error.retryAfter!=null){const s=await state();await patchState({cooldownUntil:Math.max(s.cooldownUntil||0,Date.now()+retryDelay(error.retryAfter,Date.now(),1))});}
+    return {ok:false,...result,error:abort.signal.aborted?'公式ノートの取得を中止しました。':error.message};
+  }).finally(()=>{activeProfile=null;profileController=null;});return activeProfile;
+}
 async function configureFollowerScript(enabled){
   const id='vrc-x-followers',registered=await chrome.scripting.getRegisteredContentScripts({ids:[id]});
   if(!enabled){if(registered.length)await chrome.scripting.unregisterContentScripts({ids:[id]});return;}
@@ -329,6 +384,7 @@ async function command(message) {
   }
   if(message.type==='LOAD_ARCHIVE'){const result=await cloud.loadRange(message);if(result.skipped)throw Error('同期または設定変更中です。完了後に再試行してください。');return result;}
   if(message.type==='RUN_REPORTS')return makeReports({accountId:message.accountId,viewId:message.viewId,force:true});
+  if(message.type==='USER_NOTE')return lookupUserNote(message);
   if(message.type==='X_PROFILE')return lookupXProfile(message);
   if(message.type==='COLLECT_X_FOLLOWERS')return collectFollowers(message);
   if(message.type==='PAUSE_X_FOLLOWERS')return followerQueue.pause();
@@ -425,7 +481,7 @@ async function command(message) {
     void run(); return { ok: true };
   }
   if (message.type === 'CLEAR') {
-    profileResetting=true;followerGeneration++;
+    profileResetting=true;followerGeneration++;noteGeneration++;
     try {
       await followerQueue.clear();
       await pause();
@@ -441,7 +497,7 @@ async function command(message) {
       await chrome.alarms.clear(IMAGE_ALARM);
       const s = await state();
       // Clearing personal data must not clear server-imposed backoff or the rate-limit clock.
-      await chrome.storage.local.set({ accountMeta: {}, xProfileCache: {}, xFollowerCache:{}, state: { phase: 'paused', message: '保存データを削除しました。', cooldownUntil: s.cooldownUntil || 0,
+      await chrome.storage.local.set({ accountMeta: {}, xProfileCache: {}, xFollowerCache:{}, userNoteChecks:{}, state: { phase: 'paused', message: '保存データを削除しました。', cooldownUntil: s.cooldownUntil || 0,
         failures: s.failures || 0, lastRequestAt: s.lastRequestAt || 0, lastStartedAt: s.lastStartedAt || 0 } });
       return { ok: true };
     } finally { cloud.resume(); profileResetting=false; }
@@ -458,7 +514,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     const generation=followerGeneration;const work=followerObservations.catch(()=>{}).then(()=>generation===followerGeneration?acceptFollowerObservation(message,sender):{ok:false});followerObservations=work;work.then(respond,()=>respond({ok:false}));return true;
   }
   if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL(''))) return false;
-  if (message.type === 'SYNC' || message.type === 'TEST_SYNC' || message.type === 'X_PROFILE') {
+  if (message.type === 'SYNC' || message.type === 'TEST_SYNC' || message.type === 'X_PROFILE' || message.type === 'USER_NOTE') {
     command(message).then(respond, error => respond({ok:false,error:error.message}));
     return true;
   }

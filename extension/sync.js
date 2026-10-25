@@ -194,7 +194,7 @@ export function createSync({ storage, exportRecords, mergeRecords, mergeArchiveR
       }
       pending ||= more;
       await storage.set({cloudState:{...status, phase:pending ? 'pending' : upgradeRequired?'partial':'ready',stage:pending?'pending':upgradeRequired?'upgrade':'complete', lastError:'',lastErrorAt:null, lastSuccessAt:pending||upgradeRequired ? state.lastSuccessAt || null : now(), failures:0,
-        uploaded, downloaded, unsupported,retentionDays,upgradeRequired, message:(pending ? `同期の続きがあります（送信 ${uploaded} / 受信 ${downloaded}件）。次回続行します。` : `${unsupported?'一部の記録は未同期':upgradeRequired?'旧GASとの互換同期':'同期完了'}：送信 ${uploaded} / 受信 ${downloaded}件${protocol===1 ? ' · 旧GAS互換モード（GAS更新を推奨）' : ''}`)+(unsupported?` GAS未対応の記録 ${unsupported}件（訪問・同席・Xリンク・フォロワー数など）は未送信です。GASの2ファイルを更新し、setup・再デプロイしてください。`:upgradeRequired?' 全収集データの保存にはGASのCode.gs・Protocol.gsの更新、setup・再デプロイが必要です。':'')+(retentionDays>0?` GASは${retentionDays}日で整理します。全期間を保管する場合はRETENTION_DAYSを0に設定してください。`:'')}});
+        uploaded, downloaded, unsupported,retentionDays,upgradeRequired, message:(pending ? `同期の続きがあります（送信 ${uploaded} / 受信 ${downloaded}件）。次回続行します。` : `${unsupported?'一部の記録は未同期':upgradeRequired?'旧GASとの互換同期':'同期完了'}：送信 ${uploaded} / 受信 ${downloaded}件${protocol===1 ? ' · 旧GAS互換モード（GAS更新を推奨）' : ''}`)+(unsupported?` GAS未対応の記録 ${unsupported}件（訪問・同席・Xリンク・フォロワー数・公式ノートなど）は未送信です。GASの2ファイルを更新し、setup・再デプロイしてください。`:upgradeRequired?' 全収集データの保存にはGASのCode.gs・Protocol.gsの更新、setup・再デプロイが必要です。':'')+(retentionDays>0?` GASは${retentionDays}日で整理します。全期間を保管する場合はRETENTION_DAYSを0に設定してください。`:'')}});
       return {uploaded, downloaded, pending, unsupported};
     } catch (error) {
       const failures = (state.failures || 0) + 1;

@@ -4,10 +4,10 @@ const SYNC_PROTOCOL = 2;
 const RECORD_SCHEMA = 2;
 const SYNC_BATCH_SIZE = 100;
 const LEGACY_SYNC_KINDS = ['friends', 'events', 'worlds', 'runs', 'accounts'];
-const RESEARCH_KINDS = ['segments','crowd','coverage','followerHistory','annotations','views','reports'];
+const RESEARCH_KINDS = ['segments','crowd','coverage','followerHistory','annotations','views','reports','userNotes','userNoteHistory'];
 const SYNC_KINDS = [...LEGACY_SYNC_KINDS, 'visits', 'encounters', 'profiles', 'xFollowers', ...RESEARCH_KINDS];
-const ARCHIVE_KINDS = ['profiles','xFollowers','annotations','views'];
-const HISTORY_KINDS = ['events','runs','visits','encounters','segments','crowd','coverage','followerHistory','reports'];
+const ARCHIVE_KINDS = ['profiles','xFollowers','annotations','views','userNotes'];
+const HISTORY_KINDS = ['events','runs','visits','encounters','segments','crowd','coverage','followerHistory','reports','userNoteHistory'];
 // Exact observation times, encoded as base-36 deltas rather than repeated state snapshots.
 function decodeChecks(startedAt, checks='') {
   if(typeof checks!=='string'||checks.length>6000)throw Error('SCHEMA');
@@ -66,6 +66,12 @@ function normalizeRecord(kind, input, now = Date.now()) {
       Object.assign(value,{url:input.url,followers:count(input.followers),approximate:input.approximate,source:'x-profile'});key=input.url.slice(14);
     }
     key=input.collectorId+':'+key+':'+startedAt;
+  } else if(kind==='userNotes'||kind==='userNoteHistory'){
+    if(!id(input.userId)||input.source!=='vrchat-user-note'||typeof input.note!=='string'||input.note.length>8000)throw Error('公式ノートの形式が不正です。');
+    const changedAt=time(input.changedAt),createdAt=optionalTime(input.createdAt);if(changedAt>observedAt)throw Error('公式ノートの日時が不正です。');
+    const noteId=input.noteId||'';if(noteId&&!/^unt_[a-zA-Z0-9-]{8,64}$/.test(noteId))throw Error('公式ノートIDが不正です。');
+    value={accountId,userId:input.userId,observedAt,changedAt,note:input.note,noteId,createdAt,displayName:str(input.displayName,128),source:'vrchat-user-note'};
+    key=input.userId+(kind==='userNoteHistory'?':'+changedAt:'');
   } else if(kind==='annotations'||kind==='views'||kind==='reports'){
     if(!token(input.id))throw Error('SCHEMA');value={accountId,observedAt,id:input.id,title:str(input.title,160),deleted:input.deleted===true};key=input.id;
     if(kind==='annotations'){

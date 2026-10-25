@@ -13,6 +13,7 @@ import { createResearchView } from './research-ui.js';
 import { createAnalysisLab } from './analysis-lab-ui.js';
 import { followerTargets } from './x-follower-collector.js';
 import { X_FOLLOWER_ORIGINS, followerRecords, bestFollowerMetric, followerText } from './x-followers.js';
+import { createUserNotesView } from './user-notes-ui.js';
 import { createXProfileView } from './x-profile-ui.js';
 import { buildAnalysisReport, DAY } from './analysis-lab.js';
 import { lineChart, barChart, donutChart, columnChart } from './charts.js';
@@ -30,12 +31,13 @@ let xProfiles={},xMetrics={},xFollowerConfig={},xFollowerDirty=false,xFollowerQu
 const demo = isDemo ? demoData() : null;
 initializeNavigationIcons();
 function node(tag, content, className) { const el = document.createElement(tag); if (content != null) el.textContent = content; if (className) el.className = className; return el; }
-const imageURLs=new Map(),imageElements=new Map();let currentGraph;
+const imageURLs=new Map(),imageElements=new Map();let currentGraph,detailAccount='';
 const network=createWorldNetworkView({onSelect:showNetworkDetail,onLayoutChange:renderJourney,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const connections=createConnectionsView({node,date,avatar,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const analysisLab=createAnalysisLab({node,date,download,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const research=createResearchView({root:$('researchPanel'),isDemo,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const xProfileView=createXProfileView({node,date,request:message=>chrome.runtime.sendMessage(message),isOpen:()=>$('detail').open,getFollower:(accountId,url)=>xMetrics['xFollowers:'+accountId+':'+url.slice(14)],followersEnabled:()=>xFollowerConfig.enabled===true,enableFollowers:enableXFollowers,getQueue:()=>xFollowerQueue});
+const userNotes=createUserNotesView({root:$('userNotes'),request:message=>chrome.runtime.sendMessage(message),isOpen:()=>$('detail').open,sync:syncView});
 function avatar(kind,id,name) {
   const url=imageURLs.get(kind+':'+id);
   const privateClass=kind==='user'&&data.friends.some(f=>f.id===id&&f.location?.kind==='private')?' is-private':'';
@@ -364,6 +366,7 @@ function renderHistory(container, events) {
   }
 }
 function showDetail(f) {
+  detailAccount=selectedAccount;
   $('detailName').replaceChildren(avatar('user',f.id,f.displayName),document.createTextNode(f.displayName));
   const fields=$('detailFields');fields.replaceChildren();
   const w=data.worlds.find(w=>w.id===f.location.worldId);
@@ -381,6 +384,7 @@ function showDetail(f) {
   const socials=node('dd');socials.id='detailXProfiles';fields.prepend(node('dt','X（Twitter）'),socials);fields.append(label,links);
   renderHistory($('detailHistory'),data.events.filter(e=>e.userId===f.id));$('detail').showModal();
   xProfileView.show(socials,selectedAccount,f.id,{demo:isDemo});
+  userNotes.show(selectedAccount,f.id,{demo:isDemo});
 }
 let refreshQueue=Promise.resolve();
 function reload() { refreshQueue=refreshQueue.then(load).catch(e=>toast('表示データを読み取れません：'+e.message));return refreshQueue; }
@@ -396,10 +400,11 @@ async function load() {
     if(selectedAccount){const savedData=await exportAccount(selectedAccount,{includeResearch:false});const events=savedData.events.sort((a,b)=>b.observedAt-a.observedAt);data={friends:savedData.friends,events:events.slice(0,200),journeyEvents:events,worlds:savedData.worlds,runs:savedData.runs,visits:savedData.visits,encounters:savedData.encounters,lastSuccessAt:accounts[selectedAccount]?.lastSuccessAt};}
     else data={friends:[],events:[],worlds:[],runs:[]};
   }
+  if($('detail').open&&detailAccount!==selectedAccount)$('detail').close();
   await loadImages();
   if(!xFollowerDirty)$('xFollowerEnabled').checked=xFollowerConfig.enabled===true;
   $('xFollowerStatus').textContent=`保存済みのXアカウント：${Object.values(xMetrics).filter(v=>v.accountId===selectedAccount).length}件 · ${xFollowerConfig.enabled?'取得は有効':'取得は無効'}（保存済みの数値は表示します）`;
-  renderXCollection();xProfileView.refresh();
+  renderXCollection();xProfileView.refresh();userNotes.refresh(selectedAccount);
   if(!imageDirty)$('imageEnabled').checked=imageConfig.enabled===true;
   $('imageStatus').textContent=`表示中のアカウント：${imageRows.filter(r=>r.blob).length}枚 · ${(imageRows.reduce((n,r)=>n+(r.bytes||0),0)/1048576).toFixed(1)}MiB · 未取得 ${imageRows.filter(r=>!r.blob||r.cachedUrl!==r.url).length}件`;
   if(!dirty){for(const id of ['contact','pollSeconds','retentionDays','offlineRefreshMinutes']){
@@ -456,7 +461,7 @@ $('settingsForm').addEventListener('submit',async e=>{e.preventDefault();const v
   if(await send({type:'SAVE',settings:values})){dirty=false;$('settingsNotice').textContent='保存しました';await reload();}});
 $('clear').addEventListener('click',async()=>{if(confirm('この端末の全アカウントの記録を削除し、収集・同期を停止します。スプレッドシートの記録は残り、同期を再開すると再取得されます。実行しますか？')&&await send({type:'CLEAR'})){selectedAccount='';await reload();toast('全記録を削除しました。');}});
 $('closeDetail').addEventListener('click',()=>$('detail').close());
-$('detail').addEventListener('close',()=>xProfileView.cancel());
+$('detail').addEventListener('close',()=>{xProfileView.cancel();userNotes.cancel();});
 $('exportCSV').addEventListener('click',()=>exportData('friends'));$('exportJSON').addEventListener('click',()=>exportData('json'));$('exportEvents').addEventListener('click',()=>exportData('events'));
 if(!isDemo){let timer;chrome.storage.onChanged.addListener(()=>{clearTimeout(timer);timer=setTimeout(()=>void reload(),200);});}
 setInterval(()=>{if(loaded)render();},30000);

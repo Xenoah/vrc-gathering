@@ -65,6 +65,7 @@ async def main():
     await next_job();await worker.wait_for_function('fixture.values.xFollowerQueue?.success===2');assert '/old#' in created[1]
     await next_job();await worker.wait_for_function("fixture.values.xFollowerQueue?.phase==='complete'");assert '/fresh#' in created[2]
     await expect(worker.locator('#friendsPanel [data-x-queue]')).to_contain_text('3成功')
+    assert await worker.evaluate('fixture.api.length')==0
     # Actual user detail triggers one priority refresh and updates its visible count.
     await worker.evaluate('fixture.offset+=61000');counts['missing']=777
     await worker.locator('#friendsBody tr').filter(has_text='星灯り').click()
@@ -80,12 +81,13 @@ async def main():
     modes['old']='limit';await worker.locator('#friendsPanel [data-x-collect]').click();await next_job()
     await worker.wait_for_function("fixture.values.xFollowerQueue?.phase==='paused'")
     assert await worker.evaluate("fixture.values.xFollowerCache['xFollowers:usr_demoaccount0001:old'].followers")==222
-    assert await worker.evaluate('fixture.api.length')==0
+    # The independent official-note reader may try an identity GET when the detail opens.
+    assert all(u=='https://vrchat.com/api/1/auth/user' for u in await worker.evaluate('fixture.api'))
     assert all('/api/' not in u for u in requests)
     await worker.screenshot(path='/tmp/vrc-x-collection-desktop.png',full_page=True)
     await worker.set_viewport_size({'width':390,'height':844});assert await worker.evaluate('document.documentElement.scrollWidth<=innerWidth')
     await worker.screenshot(path='/tmp/vrc-x-collection-mobile.png',full_page=True)
     assert not errors,errors
-    await browser.close();print('PASS: real separate tabs, priority bulk queue, automatic and manual detail refresh, live counts, preserved manual tab, rate-limit pause, no X/VRChat API calls, mobile')
+    await browser.close();print('PASS: real separate tabs, priority bulk queue, automatic and manual detail refresh, live counts, preserved manual tab, rate-limit pause, no APIs during bulk X collection, mobile')
 try:asyncio.run(main())
 finally:server.shutdown()
