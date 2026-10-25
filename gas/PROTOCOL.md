@@ -13,7 +13,7 @@ GASの `/exec` へPOSTし、`Content-Type: text/plain;charset=UTF-8` のJSONを�
 ```
 
 ```json
-{"protocol":2,"ok":true,"datasetId":"UUID","protocols":[1,2],"recordSchemas":[1,2],"operations":["upsert"],"kinds":["friends","events","worlds","runs","accounts"],"maxBatch":100,"serverTime":1792800000000}
+{"protocol":2,"ok":true,"datasetId":"UUID","protocols":[1,2],"recordSchemas":[1,2],"operations":["upsert"],"kinds":["friends","events","worlds","runs","accounts","visits","encounters"],"maxBatch":100,"serverTime":1792800000000}
 ```
 
 以後の要求には `protocol:2`、`token`、`datasetId` を必ず付けます。
@@ -21,7 +21,7 @@ GASの `/exec` へPOSTし、`Content-Type: text/plain;charset=UTF-8` のJSONを�
 | action | 追加する入力 | 正常応答の主要項目 |
 | --- | --- | --- |
 | `push` | `records`: 最大100件 | `accepted`: 受け付けた件数、`datasetId` |
-| `pull` | `cursor`: 0以上の整数、`limit`: 1〜100 | `records`, `cursor`, `hasMore`, `datasetId` |
+| `pull` | `cursor`: 0以上の整数、`limit`: 1〜100、`kinds`: helloで確認した記録種別（省略時は従来の5種） | `records`, `cursor`, `hasMore`, `datasetId` |
 
 受信レコードには `revision`（サーバー更新番号）を付けます。カーソルはレコード件数・行番号ではありません。更新・追加で番号を増やし、削除や中断で欠番になっても再利用しません。最後のページはサーバーの現在番号まで進みます。送信はバッチ全体を検証してから書き込みます。GASの途中終了では一部だけ保存される可能性がありますが、同じバッチの再送で回復できます。
 
@@ -61,12 +61,14 @@ GASの `/exec` へPOSTし、`Content-Type: text/plain;charset=UTF-8` のJSONを�
 | worlds | ワールドID | 名前・作者・定員・取得日時 |
 | runs | 巡回開始ミリ秒 | 開始／終了時刻・取得／変更数・ページ継続位置 |
 | accounts | アカウントID | 所有者の表示名・最終観測 |
+| visits | startedAt | 自分の訪問・状態区間。startedAt / lastSeenAt / endedAt / presence / location |
+| encounters | userId + `:` + startedAt | 同席観測区間。visitStartedAt / lastSeenAt / endedAt / relation / location / otherInstanceId |
 
 観測日時が新しいレコードを優先し、同時刻は正規化JSONの辞書順で決定します。イベントの識別は既存v1と同じです。別端末が同じユーザーを同じミリ秒に異なる状態で記録した場合も、1件へ競合解決します。UUIDへの変更による履歴の二重化を避けるため、この識別規則は維持しています。
 
 `value.extensions` は省略可能です。キーは `example.annotation` のようなドット区切りの名前空間で、JSON値は深さ4・全体8,000文字まで。未知の名前空間もローカル／GASで保持します。観測の優先規則で勝ったレコードの同名名前空間を採用し、そこに存在しない名前空間は以前の値を残します。旧クライアントや通常の収集処理が拡張項目を送らなくても消失しません。名前空間の削除が必要なら明示的な `null` を値にします。
 
-現在の操作は **upsertのみ**。未対応の `schemaVersion` や操作を黙って切り捨てずに拒否します。将来の削除伝播・新しいレコード種別・項目の型変更は、スキーマ更新とhelloの機能通知を追加して導入します。端末内の削除をクラウド全体へ伝播する機能はありません。
+現在の操作は **upsertのみ**。未対応の `schemaVersion` や操作を黙って切り捨てずに拒否します。新しいレコード種別はhelloのkindsで通知し、pullのkindsで対応種別を指定します。旧拡張が種別を省略した場合とprotocol 1には従来の5種だけを返します。既存フィールドの型や操作を変える場合にはスキーマの更新が必要です。端末内の削除をクラウド全体へ伝播する機能はありません。
 
 ## シート
 
@@ -77,11 +79,13 @@ GASの `/exec` へPOSTし、`Content-Type: text/plain;charset=UTF-8` のJSONを�
 | VRCWorlds | ワールド情報 | author_name, capacity |
 | VRCRuns | 巡回の結果 | started_at_ms, completed_at_ms, observed_count, changed_count |
 | VRCAccounts | 所有者の表示情報 | なし |
+| VRCVisits | 自分の訪問・状態区間 | started_at_ms, last_seen_at_ms, ended_at_ms |
+| VRCEncounters | ユーザーとの重なり | started_at_ms, last_seen_at_ms, ended_at_ms, visit_started_at_ms, relation, other_instance_id |
 | VRCSchema | 形式・移行情報 | name / value の組 |
 
 共通列は `record_id`, `revision`, `record_kind`, `account_id`, `observed_at_ms`, `display_name`, `presence`, `world_id`, `instance_id`, `world_name`, `payload_json`, `schema_version`, `operation`, `entity_id`, `received_at_ms`, `extensions_json`。日時はUnixミリ秒です。受信時刻と観測時刻を分離しています。
 
-`payload_json` が復元元で、その他の業務列はシート上での閲覧・集計用です。数式になりうる文字列をエスケープします。手編集の同期は未対応です。`VRCSchema` の形式番号・データセットID・移行完了フラグ、行ID・更新番号・JSON列、`SEQ_<datasetId>` プロパティは編集しないでください。5種類の記録の合計上限は50,000件です。
+`payload_json` が復元元で、その他の業務列はシート上での閲覧・集計用です。数式になりうる文字列をエスケープします。手編集の同期は未対応です。`VRCSchema` の形式番号・データセットID・移行完了フラグ、行ID・更新番号・JSON列、`SEQ_<datasetId>` プロパティは編集しないでください。7種類の記録の合計上限は50,000件です。
 
 画像、画像取得URL、Cookie、認証トークン、連絡先は同期データから分離します。画像は端末の別IndexedDBストアで管理し、GASの表を肥大化させません。
 
@@ -91,3 +95,10 @@ GASの `/exec` へPOSTし、`Content-Type: text/plain;charset=UTF-8` のJSONを�
 - 旧 `VRCRecords` は変更せず残します。移行後は参照用バックアップで、日次整理の対象外です。移行・同期確認後は必要に応じて手動削除してください。移行完了フラグは維持します。
 - 新GASはprotocol 1のpush/pullも受け付けます。スキーマ・操作が省略されたv1レコードはupsertとして処理します。
 - 新拡張は旧GASが明示的にprotocol 1の `REQUEST` を返した場合のみ互換モードに切り替えます。認証・ネットワークエラーを互換モードで回避しません。旧GASでは新しい名前空間の保持などv2機能は利用できないため、両方のGASファイルを更新してください。
+
+
+## 訪問・同席区間（v0.5.0）
+
+`startedAt <= lastSeenAt <= observedAt` を満たします。終了が観測された区間は `endedAt` を持ち、`lastSeenAt <= endedAt <= observedAt` です。終了の確認時刻まで同席時間を延長せず、継続時間には最後に一致した `lastSeenAt` を使います。`observedAt` は終了を含む最終更新の観測時刻で、競合解決と保存期間整理に使います。
+
+`encounters.relation` は `instance` または `world`。`instance` は双方の空でないインスタンスIDの一致が必須です。所在非公開から同席レコードを作りません。レコードの追加はschemaVersion 2の新しい種類として通知し、旧GASへ未対応の種類を送信しません。クライアントが読む種類が増減したらカーソルを0から再確認し、旧カーソルより前にある新しい種類の行を取り逃がさないようにします。

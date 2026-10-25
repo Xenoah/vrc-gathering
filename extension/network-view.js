@@ -19,15 +19,15 @@ export function createNetworkView({viewport,stage,canvas,zoomLabel,onSelect,imag
     const origin=offset();context.translate(origin.x-viewport.scrollLeft,origin.y-viewport.scrollTop);context.scale(scale,scale);
     for(const edge of graph.edges){const p=edgePoints(edge),focused=selected===edge.id;context.beginPath();context.strokeStyle=focused?'#c16b27':'#709c96';context.globalAlpha=focused?1:.58;context.lineWidth=(focused?4:Math.min(7,1+Math.log2(edge.count+1)))/Math.max(scale,.5);
       if(p.self){context.arc(p.c.x,p.c.y,p.r,.5,Math.PI*2+.1);}else{context.moveTo(p.a.x,p.a.y);context.quadraticCurveTo(p.c.x,p.c.y,p.b.x,p.b.y);}context.stroke();
-      if(scale>.15){if(p.self)p.b={x:p.c.x+Math.cos(.1)*p.r,y:p.c.y+Math.sin(.1)*p.r};const angle=p.self ? .1+Math.PI/2 : Math.atan2(p.b.y-p.c.y,p.b.x-p.c.x),s=10/Math.max(scale,.6);context.beginPath();context.moveTo(p.b.x,p.b.y);context.lineTo(p.b.x-Math.cos(angle-.45)*s,p.b.y-Math.sin(angle-.45)*s);context.lineTo(p.b.x-Math.cos(angle+.45)*s,p.b.y-Math.sin(angle+.45)*s);context.closePath();context.fillStyle=context.strokeStyle;context.fill();}
+      if(scale>.15 && !edge.undirected){if(p.self)p.b={x:p.c.x+Math.cos(.1)*p.r,y:p.c.y+Math.sin(.1)*p.r};const angle=p.self ? .1+Math.PI/2 : Math.atan2(p.b.y-p.c.y,p.b.x-p.c.x),s=10/Math.max(scale,.6);context.beginPath();context.moveTo(p.b.x,p.b.y);context.lineTo(p.b.x-Math.cos(angle-.45)*s,p.b.y-Math.sin(angle-.45)*s);context.lineTo(p.b.x-Math.cos(angle+.45)*s,p.b.y-Math.sin(angle+.45)*s);context.closePath();context.fillStyle=context.strokeStyle;context.fill();}
     }
     context.globalAlpha=1;
     for(const n of graph.nodes){const sx=n.x*scale+origin.x-viewport.scrollLeft,sy=n.y*scale+origin.y-viewport.scrollTop;if(sx<-150||sy<-100||sx>w+150||sy>h+100)continue;
       context.beginPath();context.arc(n.x,n.y,35,0,Math.PI*2);context.fillStyle=n.kind==='world'?'#dceee8':'#e8e8ed';context.fill();context.strokeStyle=selected===n.id?'#c16b27':n.kind==='world'?'#31796e':'#8a8999';context.lineWidth=selected===n.id?4:2;context.stroke();
-      const image=n.kind==='world'?imageFor?.('world',n.id):null;
+      const image=n.kind==='world'?imageFor?.('world',n.id):n.kind==='user'?imageFor?.('user',n.imageId||n.id):null;
       if(image?.complete&&image.naturalWidth){context.save();context.beginPath();context.arc(n.x,n.y,31,0,Math.PI*2);context.clip();context.drawImage(image,n.x-31,n.y-31,62,62);context.restore();}
       else if(scale>.2){context.fillStyle='#285c53';context.font='600 22px sans-serif';context.textAlign='center';context.fillText([...n.name][0]||'?',n.x,n.y+8);}
-      if(scale>.22){context.fillStyle='#253c38';context.font='600 14px sans-serif';context.textAlign='center';const label=[...n.name].length>23?[...n.name].slice(0,22).join('')+'…':n.name;context.fillText(label,n.x,n.y+58);context.font='12px sans-serif';context.fillStyle='#60746f';context.fillText(n.currentUsers.size+' 人滞在 · '+n.moves+' 回移動',n.x,n.y+77);}
+      if(scale>.22){context.fillStyle='#253c38';context.font='600 14px sans-serif';context.textAlign='center';const label=[...n.name].length>23?[...n.name].slice(0,22).join('')+'…':n.name;context.fillText(label,n.x,n.y+58);context.font='12px sans-serif';context.fillStyle='#60746f';context.fillText(n.caption ?? (n.currentUsers.size+' 人滞在 · '+n.moves+' 回移動'),n.x,n.y+77);}
     }
   }
   function select(id){selected=id;onSelect(graph.nodes.find(n=>n.id===id)||graph.edges.find(e=>e.id===id)||null);requestDraw();}

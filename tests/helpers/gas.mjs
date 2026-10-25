@@ -18,5 +18,5 @@ export function gasHarness() {
   vm.runInContext(fs.readFileSync(new URL('../../gas/Protocol.gs',import.meta.url),'utf8')+'\n'+fs.readFileSync(new URL('../../gas/Code.gs',import.meta.url),'utf8'),context);
   function request(body){return context.doPost({postData:{contents:JSON.stringify({protocol:1,token:TOKEN,...body})}});}
   return {request,properties,context,logs,table:name=>book(properties.SPREADSHEET_ID).get(name),seed:(name,rows)=>book(properties.SPREADSHEET_ID).set(name,structuredClone(rows)),
-    get cells(){const tables=[...book(properties.SPREADSHEET_ID)].filter(([n])=>/^VRC(Friends|Events|Worlds|Runs|Accounts)$/.test(n));return tables.length?[tables[0][1][0],...tables.flatMap(([,rows])=>rows.slice(1))]:[];},get opens(){return opens;}};
+    get cells(){const tables=[...book(properties.SPREADSHEET_ID)].filter(([n])=>/^VRC(Friends|Events|Worlds|Runs|Accounts|Visits|Encounters)$/.test(n));return tables.length?[tables[0][1][0],...tables.flatMap(([,rows])=>rows.slice(1))]:[];},get opens(){return opens;}};
 }

@@ -130,13 +130,13 @@ test('intelligence tabs and timeline mount remain part of the packaged dashboard
   assert.match(js,/function renderHome\(\)/);
 });
 
-test('the v0.4.0 proposal keeps v0.3.2 backups and storage schema usable',async()=>{
+test('current version keeps v0.3.2 backups usable and migrates local storage',async()=>{
   const pkg=JSON.parse(fs.readFileSync(new URL('../package.json',import.meta.url),'utf8'));
   const lock=JSON.parse(fs.readFileSync(new URL('../package-lock.json',import.meta.url),'utf8'));
   const manifest=JSON.parse(fs.readFileSync(new URL('../extension/manifest.json',import.meta.url),'utf8'));
   const {VERSION}=await import('../extension/core.js');
   const {validateSettingsBackup}=await import('../extension/settings-backup.js');
-  assert.equal(pkg.version,'0.4.0');
+  assert.match(pkg.version,/^\d+\.\d+\.\d+$/);
   assert.equal(pkg.version,lock.version);
   assert.equal(pkg.version,lock.packages[''].version);
   assert.equal(pkg.version,manifest.version);
@@ -147,7 +147,7 @@ test('the v0.4.0 proposal keeps v0.3.2 backups and storage schema usable',async(
   assert.equal(validateSettingsBackup(previousBackup).appVersion,'0.3.2');
   const dbSource=fs.readFileSync(new URL('../extension/db.js',import.meta.url),'utf8');
   const syncSource=fs.readFileSync(new URL('../extension/sync-format.js',import.meta.url),'utf8');
-  assert.ok(dbSource.includes("indexedDB.open('vrc-friends-observer', 2)"));
+  assert.ok(dbSource.includes("indexedDB.open('vrc-friends-observer', 3)"));
   assert.match(syncSource,/export const RECORD_SCHEMA = 2;/);
   assert.match(syncSource,/export const SYNC_PROTOCOL = 2;/);
 });

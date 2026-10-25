@@ -2,7 +2,8 @@
 export const SYNC_PROTOCOL = 2;
 export const RECORD_SCHEMA = 2;
 export const SYNC_BATCH_SIZE = 100;
-export const SYNC_KINDS = ['friends', 'events', 'worlds', 'runs', 'accounts'];
+export const LEGACY_SYNC_KINDS = ['friends', 'events', 'worlds', 'runs', 'accounts'];
+export const SYNC_KINDS = [...LEGACY_SYNC_KINDS, 'visits', 'encounters'];
 export function canonical(value) {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
   if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canonical(value[k])).join(',') + '}';
@@ -50,6 +51,21 @@ export function normalizeRecord(kind, input, now = Date.now()) {
     value = { accountId, observedAt, startedAt: time(input.startedAt), completedAt: time(input.completedAt), onlineComplete: input.onlineComplete === true,
       onlineOffset: count(input.onlineOffset), offlineOffset: count(input.offlineOffset), observedCount: count(input.observedCount), changedCount: count(input.changedCount), worldNamesPending: count(input.worldNamesPending) };
     key = String(value.startedAt);
+  } else if (kind === 'visits' || kind === 'encounters') {
+    const startedAt=time(input.startedAt),lastSeenAt=time(input.lastSeenAt),endedAt=optionalTime(input.endedAt);
+    if(startedAt>lastSeenAt || lastSeenAt>observedAt || endedAt!=null && (endedAt<lastSeenAt || endedAt>observedAt))throw Error('観測区間の日時が不正です。');
+    value={accountId,observedAt,startedAt,lastSeenAt,endedAt,displayName:str(input.displayName,128),location:loc(input.location)};
+    if(kind==='visits') {
+      value.presence=['online','active','offline','unknown'].includes(input.presence)?input.presence:'unknown';
+      if(value.presence==='offline')value.location=loc({kind:'offline'});
+      key=String(startedAt);
+    } else {
+      if(!id(input.userId) || input.userId===accountId || !['instance','world'].includes(input.relation) || value.location.kind!=='world')throw Error('同席記録の形式が不正です。');
+      const visitStartedAt=time(input.visitStartedAt),otherInstanceId=str(input.otherInstanceId,1024);
+      if(visitStartedAt>startedAt || input.relation==='instance' && (!otherInstanceId || otherInstanceId!==value.location.instanceId))throw Error('同席先が一致しません。');
+      Object.assign(value,{userId:input.userId,visitStartedAt,relation:input.relation,otherInstanceId});
+      key=input.userId+':'+startedAt;
+    }
   } else {
     value = { accountId, observedAt, displayName: str(input.displayName,128) || accountId };
     key = accountId;

@@ -175,7 +175,7 @@ try:
                   for(const name of ['events','runs']){const store=open.result.createObjectStore(name,{keyPath:'key',autoIncrement:true});store.createIndex('accountTime',['accountId','observedAt']);store.createIndex('observed','observedAt');}
                   open.transaction.objectStore('friends').put(d.friends[0]);
                 };open.onsuccess=()=>{open.result.close();resolve();};open.onerror=()=>reject(open.error);});
-                if((await db()).version!==2)throw Error('Database upgrade failed');
+                if((await db()).version!==3)throw Error('Database upgrade failed');
                 if((await exportAccount(d.accountId)).friends.length!==1)throw Error('Upgrade lost records');
                 const records = [...d.friends.map(v=>normalizeRecord('friends',v)), ...d.events.map(v=>normalizeRecord('events',v)), ...d.worlds.map(v=>normalizeRecord('worlds',{...v,accountId:d.accountId}))];
                 await mergeSyncRecords([...records,...records]);

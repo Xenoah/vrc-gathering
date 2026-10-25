@@ -27,7 +27,11 @@ export function demoData() {
     latest.previous=earlier.at(-1).current;latest.previousObservedAt=earlier.at(-1).observedAt;latest.kind='changed';merged.events.push(...earlier);
     merged.records[index].firstObservedAt=earlier[0].observedAt;
   }
-  return { accountId, friends: merged.records, events: merged.events.sort((a,b)=>b.observedAt-a.observedAt), worlds: [
+  const visit=(start,end,where)=>({accountId,displayName:'デモアカウント',presence:'online',startedAt:now-start,lastSeenAt:now-end,observedAt:now-end,endedAt:now-end,location:location(where)});
+  const visits=[visit(3600000,1800000,rows[0][2]),visit(7200000,5400000,rows[5][2]),visit(180000,45000,rows[0][2])];visits[2].endedAt=null;
+  const encounter=(index,v,relation='instance')=>({accountId,userId:samples[index].id,displayName:samples[index].displayName,startedAt:v.startedAt+10000,lastSeenAt:v.lastSeenAt,observedAt:v.lastSeenAt,endedAt:v.endedAt,visitStartedAt:v.startedAt,relation,location:v.location,otherInstanceId:relation==='instance'?v.location.instanceId:'99999~region(jp)'});
+  const encounters=[encounter(0,visits[0]),encounter(3,visits[0]),encounter(5,visits[1]),encounter(0,visits[2]),encounter(8,visits[0],'world')];
+  return { accountId, visits, encounters, friends: merged.records, events: merged.events.sort((a,b)=>b.observedAt-a.observedAt), worlds: [
     { id: 'wrld_demoobservatory', name: '星灯りの展望台', authorName: '架空の制作者', capacity: 24, observedAt: now },
     { id: 'wrld_demoatelier000', name: '水辺のアトリエ', authorName: '架空の制作者', capacity: 16, observedAt: now },
     { id: 'wrld_democafe000000', name: '夜更けの喫茶室', authorName: '架空の制作者', capacity: 32, observedAt: now }

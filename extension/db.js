@@ -2,7 +2,7 @@ import { normalizeRecord, mergeRecord, canonical } from './sync-format.js';
 let opening;
 export function db() {
   if (!opening) opening = new Promise((resolve, reject) => {
-    const req = indexedDB.open('vrc-friends-observer', 2);
+    const req = indexedDB.open('vrc-friends-observer', 3);
     req.onupgradeneeded = event => {
       const d = req.result;
       if (event.oldVersion < 1) {
@@ -22,6 +22,12 @@ export function db() {
       if (event.oldVersion < 2) {
         const images = d.createObjectStore('imageCache', {keyPath:'key'});
         images.createIndex('account', 'accountId');
+      }
+      if (event.oldVersion < 3) {
+        for(const name of ['visits','encounters']) {
+          const store=d.createObjectStore(name,{keyPath:name==='visits'?['accountId','startedAt']:['accountId','userId','startedAt']});
+          store.createIndex('account','accountId');store.createIndex('observed','observedAt');
+        }
       }
     };
     req.onsuccess = () => { req.result.onversionchange = () => { req.result.close(); opening = null; }; resolve(req.result); };
@@ -45,20 +51,21 @@ export async function timeline(store, accountId, { before = Number.MAX_SAFE_INTE
     req.onsuccess = () => { const c = req.result; if (!c || items.length >= limit) return resolve(items); items.push(c.value); c.continue(); };
   });
 }
-export async function commit(records, events, worlds, run) {
+export async function commit(records, events, worlds, run, connections = {visits:[],encounters:[]}) {
   const rows = [...records.map(v => normalizeRecord('friends', v)), ...events.map(v => normalizeRecord('events', v)),
-    ...worlds.map(v => normalizeRecord('worlds', v)), ...(run ? [normalizeRecord('runs', run)] : [])];
+    ...worlds.map(v => normalizeRecord('worlds', v)), ...(run ? [normalizeRecord('runs', run)] : []),
+    ...connections.visits.map(v=>normalizeRecord('visits',v)),...connections.encounters.map(v=>normalizeRecord('encounters',v))];
   await mergeSyncRecords(rows);
 }
 export async function exportSyncRecords() {
-  const d = await db(), names = ['friends', 'events', 'worlds', 'runs'];
+  const d = await db(), names = ['friends', 'events', 'worlds', 'runs', 'visits', 'encounters'];
   const tx = d.transaction(names);
   const values = await Promise.all(names.map(name => result(tx.objectStore(name).getAll())));
   return values.flatMap((rows, i) => rows.map(value => normalizeRecord(names[i], value)));
 }
 export async function mergeSyncRecords(records) {
   // One transaction merges a downloaded batch. Replayed batches cannot duplicate history.
-  const names = ['friends', 'events', 'worlds', 'runs'];
+  const names = ['friends', 'events', 'worlds', 'runs', 'visits', 'encounters'];
   const d = await db(), tx = d.transaction(names, 'readwrite'), done = complete(tx);
   try {
     const values = await Promise.all(names.map(name => result(tx.objectStore(name).getAll())));
@@ -88,29 +95,30 @@ export async function mergeSyncRecords(records) {
   }
 }
 export async function prune(retentionDays, now = Date.now()) {
-  const d = await db(), tx = d.transaction(['events', 'runs', 'friends', 'worlds'], 'readwrite');
+  const d = await db(), tx = d.transaction(['events', 'runs', 'friends', 'worlds', 'visits', 'encounters'], 'readwrite');
   const done = complete(tx), cutoff = now - retentionDays * 86400000;
-  for (const name of ['events', 'runs', 'friends', 'worlds']) {
+  for (const name of ['events', 'runs', 'friends', 'worlds', 'visits', 'encounters']) {
     const req = tx.objectStore(name).index('observed').openCursor(IDBKeyRange.upperBound(cutoff, true));
     req.onsuccess = () => { const cursor = req.result; if (cursor) { cursor.delete(); cursor.continue(); } };
   }
   await done;
 }
 export async function clearAll() {
-  const d = await db(), tx = d.transaction(['friends', 'events', 'worlds', 'runs', 'imageCache'], 'readwrite');
+  const d = await db(), tx = d.transaction(['friends', 'events', 'worlds', 'runs', 'imageCache', 'visits', 'encounters'], 'readwrite');
   const done = complete(tx);
-  for (const name of ['friends', 'events', 'worlds', 'runs', 'imageCache']) tx.objectStore(name).clear();
+  for (const name of ['friends', 'events', 'worlds', 'runs', 'imageCache', 'visits', 'encounters']) tx.objectStore(name).clear();
   await done;
 }
 export async function exportAccount(accountId) {
-  const d = await db(), tx = d.transaction(['friends', 'events', 'worlds', 'runs']);
+  const d = await db(), tx = d.transaction(['friends', 'events', 'worlds', 'runs', 'visits', 'encounters']);
   const range = IDBKeyRange.bound([accountId, 0], [accountId, Number.MAX_SAFE_INTEGER]);
   const requests = ['friends', 'events', 'worlds', 'runs'].map(name => result(tx.objectStore(name).index(name === 'friends' || name === 'worlds' ? 'account' : 'accountTime').getAll(name === 'friends' || name === 'worlds' ? accountId : range)));
-  const [friends, events, worlds, runs] = await Promise.all(requests);
-  return { schema: 1, exportedAt: new Date().toISOString(), accountId, friends, events, worlds, runs };
+  for(const name of ['visits','encounters'])requests.push(result(tx.objectStore(name).index('account').getAll(accountId)));
+  const [friends, events, worlds, runs, visits, encounters] = await Promise.all(requests);
+  return { schema: 1, exportedAt: new Date().toISOString(), accountId, friends, events, worlds, runs, visits, encounters };
 }
 
-// Images and source URLs stay in this store; export/sync only use the four observation stores above.
+// Images and source URLs stay in this store; export/sync only use the observation stores above.
 export async function enqueueImages(accountId, candidates, now = Date.now()) {
   const d=await db(),tx=d.transaction('imageCache','readwrite'),done=complete(tx),store=tx.objectStore('imageCache');
   for(const candidate of candidates.filter(Boolean)) {

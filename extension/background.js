@@ -3,6 +3,7 @@ import { list, commit, prune, clearAll, exportSyncRecords, mergeSyncRecords, enq
 import { createImageCollector, imageCandidate, IMAGE_ORIGINS, IMAGE_CACHE_BYTES, IMAGE_CACHE_COUNT } from './image-cache.js';
 import { createSync, syncSettings, createAccountUpdater, CLOUD_ORIGINS, serverRetryDeadline } from './sync.js';
 import { resolveSettingsBackup } from './settings-backup.js';
+import { reconcileConnections } from './connections.js';
 
 const updateAccounts = createAccountUpdater(chrome.storage.local);
 const cloud = createSync({ storage:chrome.storage.local, exportRecords:exportSyncRecords, mergeRecords:mergeSyncRecords, updateAccounts, hasPermission:()=>chrome.permissions.contains({origins:CLOUD_ORIGINS}) });
@@ -80,7 +81,7 @@ async function request(path, signal, progress) {
 }
 async function identity(signal, label) {
   const raw = await request('/auth/user', signal, label);
-  try { return currentUser(raw); } catch { throw new ApiError('ログインまたは2段階認証をvrchat.comで完了してください。', 401); }
+  try { return currentUser(raw,Date.now()); } catch { throw new ApiError('ログインまたは2段階認証をvrchat.comで完了してください。', 401); }
 }
 async function pages(offline, offset, maximum, signal, me) {
   const observations = [], images = [];
@@ -129,7 +130,7 @@ async function collect(signal) {
       if (offlinePage.complete) nextMeta.offlineCompletedAt = Date.now();
     }
     const cached = new Map((await list('worlds', accountId)).map(w => [w.id, w]));
-    const worldIds = [...new Set(observations.map(f => f.location.worldId).filter(id => WORLD_ID.test(id)))];
+    const worldIds = [...new Set([me.self,...observations].map(f => f.location.worldId).filter(id => WORLD_ID.test(id)))];
     const pendingWorlds = worldIds.filter(id => !cached.has(id) || cached.get(id).retryAt < Date.now());
     const worlds = [];
     for (const id of pendingWorlds.slice(0, 5)) {
@@ -149,7 +150,9 @@ async function collect(signal) {
     const run = { accountId, observedAt: completedAt, startedAt, completedAt, onlineComplete: onlinePage.complete,
       onlineOffset: nextMeta.onlineOffset, offlineOffset: nextMeta.offlineOffset || 0, observedCount: changes.records.length,
       changedCount: changes.events.length, worldNamesPending: Math.max(0, pendingWorlds.length - 5) };
-    await commit(changes.records, changes.events, worlds, run);
+    const [previousVisits,previousEncounters]=await Promise.all([list('visits',accountId),list('encounters',accountId)]);
+    const connections=reconcileConnections(previousVisits,previousEncounters,[me.self,finalMe.self],allowed,accountId,{pollSeconds:config.pollSeconds,completedAt,roster});
+    await commit(changes.records, changes.events, worlds, run, connections);
     if((await chrome.storage.local.get('imageCacheSettings')).imageCacheSettings?.enabled)await enqueueImages(accountId,images.filter(v=>v&&(v.kind==='world'||!roster||roster.has(v.id))),completedAt);
     nextMeta.lastSuccessAt = completedAt;
     await updateAccounts(accounts => ({...accounts, [accountId]:{...accounts[accountId], ...nextMeta}}));

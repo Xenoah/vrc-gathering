@@ -10,7 +10,7 @@ const online={id:fid,displayName:'架空フレンド',status:'active',location:w
 
 async function harness(handler, allowCloud = true){
   let now=Date.UTC(2026,9,24),closed=false;
-  const events={},store={},alarms=new Map(),saved={friends:[],events:[],worlds:[],runs:[],images:[]},calls=[];
+  const events={},store={},alarms=new Map(),saved={friends:[],events:[],worlds:[],runs:[],images:[],visits:[],encounters:[]},calls=[];
   const hook=name=>({addListener:fn=>{events[name]=fn;}});
   const storage={
     get:async key=>{const keys=Array.isArray(key)?key:[key];return structuredClone(Object.fromEntries(keys.filter(k=>k in store).map(k=>[k,store[k]])));},
@@ -26,16 +26,17 @@ async function harness(handler, allowCloud = true){
     fetch:async(url,options)=>{if(closed)throw Error('closed');now+=50;calls.push({url,options,at:now});
       const response=handler(new URL(url),calls.length,options);return {ok:(response.status||200)<300,status:response.status||200,type:response.type||'basic',headers:new Headers({'Content-Type':'application/json',...(response.headers||{})}),json:async()=>structuredClone(response.body)};}});
   const dbExports={list:async(name,id)=>structuredClone(saved[name].filter(v=>v.accountId===id)),
-    commit:async(f,e,w,r)=>{for(const v of f){saved.friends=saved.friends.filter(x=>!(x.accountId===v.accountId&&x.id===v.id));saved.friends.push(structuredClone(v));}saved.events.push(...structuredClone(e));saved.worlds.push(...structuredClone(w));if(r)saved.runs.push(structuredClone(r));},
-    exportSyncRecords:async()=>[],mergeSyncRecords:async()=>{},enqueueImages:async(accountId,images)=>{saved.images.push(...images.filter(Boolean).map(v=>({...v,accountId})));},cachedImages:async()=>[],updateCachedImage:async()=>{},trimImageCache:async()=>{},clearImageCache:async()=>{saved.images=[];},prune:async()=>{},clearAll:async()=>{for(const k of ['friends','events','worlds','runs'])saved[k]=[];}};
+    commit:async(f,e,w,r,connections={visits:[],encounters:[]})=>{for(const v of f){saved.friends=saved.friends.filter(x=>!(x.accountId===v.accountId&&x.id===v.id));saved.friends.push(structuredClone(v));}saved.events.push(...structuredClone(e));saved.worlds.push(...structuredClone(w));if(r)saved.runs.push(structuredClone(r));for(const kind of ['visits','encounters'])for(const v of connections[kind]){saved[kind]=saved[kind].filter(x=>!(x.accountId===v.accountId&&x.startedAt===v.startedAt&&x.userId===v.userId));saved[kind].push(structuredClone(v));}},
+    exportSyncRecords:async()=>[],mergeSyncRecords:async()=>{},enqueueImages:async(accountId,images)=>{saved.images.push(...images.filter(Boolean).map(v=>({...v,accountId})));},cachedImages:async()=>[],updateCachedImage:async()=>{},trimImageCache:async()=>{},clearImageCache:async()=>{saved.images=[];},prune:async()=>{},clearAll:async()=>{for(const k of ['friends','events','worlds','runs','visits','encounters'])saved[k]=[];}};
   const db=new vm.SyntheticModule(Object.keys(dbExports),function(){for(const[k,v]of Object.entries(dbExports))this.setExport(k,v);},{context});
   const core=new vm.SourceTextModule(await fs.readFile(new URL('core.js',root),'utf8'),{context});await core.link(()=>{});
   const format=new vm.SourceTextModule(await fs.readFile(new URL('sync-format.js',root),'utf8'),{context});await format.link(()=>{});
   const sync=new vm.SourceTextModule(await fs.readFile(new URL('sync.js',root),'utf8'),{context});await sync.link(()=>format);
   const images=new vm.SourceTextModule(await fs.readFile(new URL('image-cache.js',root),'utf8'),{context});await images.link(()=>{});
   const backup=new vm.SourceTextModule(await fs.readFile(new URL('settings-backup.js',root),'utf8'),{context});await backup.link(spec=>spec==='./core.js'?core:sync);
+  const connections=new vm.SourceTextModule(await fs.readFile(new URL('connections.js',root),'utf8'),{context});await connections.link(()=>{});
   const bg=new vm.SourceTextModule(await fs.readFile(new URL('background.js',root),'utf8'),{context});
-  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:db);await bg.evaluate();
+  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:db);await bg.evaluate();
   async function flush(){for(let i=0;i<15;i++)await new Promise(setImmediate);}
   await flush();
   const command=message=>new Promise(resolve=>events.message(message,{id:'testextension',url:'chrome-extension://testextension/dashboard.html'},resolve));
@@ -159,4 +160,20 @@ test('importing another endpoint without a key disables sync and resets only its
   const response=await h.command({type:'IMPORT_SETTINGS',backup});
   assert.equal(response.ok,true);assert.equal(response.needsToken,true);assert.equal(h.store.cloudSync.token,'');assert.equal(h.store.cloudSync.enabled,false);
   assert.equal(h.store.cloudCheckpoint.cursor,0);assert.ok(!h.alarms.has('vrc-observer-cloud'));assert.equal(h.calls.length,0);h.stop();
+});
+
+test('self visits and same-instance evidence commit with friends without adding self to rankings',async()=>{
+  const handler=url=>url.pathname.endsWith('/auth/user')?{body:{...owner,state:'online',location:wid+':123~region(jp)',homeLocation:'wrld_notcurrent0001'}}:good(url);
+  const h=await harness(handler);await h.start();
+  assert.equal(h.saved.visits.length,1);assert.equal(h.saved.encounters.length,1);
+  assert.equal(h.saved.visits[0].accountId,uid);assert.equal(h.saved.encounters[0].userId,fid);assert.equal(h.saved.encounters[0].relation,'instance');
+  assert.equal(h.saved.friends.length,1);assert.ok(!JSON.stringify(h.saved).includes('SECRET_'));
+  h.advance(180000);await h.command({type:'POLL'});await h.flush();
+  assert.equal(h.saved.encounters.length,1);assert.ok(h.saved.encounters[0].lastSeenAt>h.saved.encounters[0].startedAt);
+  await h.command({type:'CLEAR'});assert.equal(h.saved.visits.length,0);assert.equal(h.saved.encounters.length,0);h.stop();
+});
+test('account changes discard own visits and all co-presence evidence as well as friend observations',async()=>{
+  let count=0;
+  const h=await harness(url=>url.pathname.endsWith('/auth/user')?{body:{...owner,id:++count===1?uid:'usr_switchedaccount01',state:'online',location:wid+':123~region(jp)'}}:good(url));
+  await h.start();assert.equal(h.saved.visits.length,0);assert.equal(h.saved.encounters.length,0);assert.equal(h.saved.friends.length,0);h.stop();
 });

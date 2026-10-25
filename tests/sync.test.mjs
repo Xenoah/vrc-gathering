@@ -236,3 +236,36 @@ test('connection tests share active work and do not overlap synchronization',asy
   const first=a.testConnection();assert.equal(first,a.testConnection());assert.equal((await a.sync()).reason,'busy');finish();await first;assert.equal(a.calls.length,1);
   await a.pause();assert.equal((await a.testConnection()).reason,'paused');
 });
+
+function connectionRecords(){
+  const original=fixture()[0].value,t=Date.now()-60000,location={kind:'world',worldId:'wrld_sharedworld001',instanceId:'123~region(jp)',access:'public',region:'jp'};
+  const visit=normalizeRecord('visits',{accountId:original.accountId,displayName:'Owner',startedAt:t,lastSeenAt:t+10000,observedAt:t+10000,endedAt:null,presence:'online',location});
+  const encounter=normalizeRecord('encounters',{accountId:original.accountId,userId:original.id,displayName:original.displayName,startedAt:t+1000,lastSeenAt:t+9000,observedAt:t+9000,endedAt:null,visitStartedAt:t,relation:'instance',location,otherInstanceId:location.instanceId});
+  return [visit,encounter];
+}
+test('GAS sync exchanges typed visits and encounters while legacy pulls remain compatible',async()=>{
+  const gas=gasHarness(),records=[...fixture(),...connectionRecords()],a=client(gas,records),b=client(gas);
+  await a.sync();await b.sync();assert.equal(b.rows.size,records.length);
+  assert.equal(gas.table('VRCVisits').length,2);assert.equal(gas.table('VRCEncounters').length,2);
+  const old=gas.request({action:'pull',cursor:0,limit:100});assert.equal(old.records.length,fixture().length);
+  assert.ok(old.records.every(r=>!['visits','encounters'].includes(r.kind)));
+  const hello=gas.request({protocol:2,action:'hello'});
+  assert.equal(gas.request({protocol:2,action:'pull',datasetId:hello.datasetId,cursor:0,limit:100,kinds:['bad']}).code,'REQUEST');
+});
+test('old GAS retains new histories locally and capability upgrades reset cursors to retrieve them',async()=>{
+  const gas=gasHarness(),newRecords=connectionRecords(),writer=client(gas,[...fixture(),...newRecords]);await writer.sync();
+  let upgraded=false;
+  const reader=client(gas,newRecords,async(url,options)=>{
+    const body=JSON.parse(options.body),response=gas.request(body);
+    if(body.action==='hello'&&!upgraded)response.kinds=response.kinds.filter(k=>!['visits','encounters'].includes(k));
+    if(!upgraded&&body.action==='push')assert.ok(body.records.every(r=>!['visits','encounters'].includes(r.kind)));
+    return {ok:true,json:async()=>response};
+  });
+  await reader.sync();assert.equal(reader.store.cloudState.unsupported,2);assert.match(reader.store.cloudState.message,/GASの2ファイル/);
+  assert.ok(reader.rows.has(newRecords[0].key));const oldCursor=reader.store.cloudCheckpoint.cursor;assert.ok(oldCursor);
+  // A different device's new history lies before the old cursor.
+  reader.rows.delete(newRecords[0].key);reader.rows.delete(newRecords[1].key);
+  upgraded=true;reader.advance(61000);await reader.sync();
+  const pull=reader.calls.filter(c=>JSON.parse(c.options.body).action==='pull').at(-1);
+  assert.equal(JSON.parse(pull.options.body).cursor,0);assert.ok(reader.rows.has(newRecords[0].key));assert.equal(reader.store.cloudState.unsupported,0);
+});
