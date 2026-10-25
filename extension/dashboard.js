@@ -15,6 +15,7 @@ import { followerTargets, activeFollowerJobs, X_QUEUE_CONCURRENCY } from './x-fo
 import { X_FOLLOWER_ORIGINS, followerRecords, bestFollowerMetric, followerText } from './x-followers.js';
 import { createUserNotesView } from './user-notes-ui.js';
 import { createXProfileView } from './x-profile-ui.js';
+import { createGameLogView } from './game-log-ui.js';
 import { buildAnalysisReport, DAY } from './analysis-lab.js';
 import { lineChart, barChart, donutChart, columnChart } from './charts.js';
 import { userStatus, USER_STATUSES } from './user-status.js';
@@ -27,6 +28,7 @@ const iso = v => v ? new Date(v).toISOString() : '';
 const presenceNames = { online:'ゲーム内', active:'Web／アプリ', offline:'現実世界', unknown:'不明' };
 const accessNames = { public:'Public', friends:'Friends', 'friends-plus':'Friends+', invite:'Invite', 'invite-plus':'Invite+', 'group-public':'Group Public', 'group-plus':'Group+', 'group-members':'Group', 'group-unknown':'Group', unknown:'不明' };
 let data = { friends:[], events:[], worlds:[] }, config = { ...DEFAULTS }, state = {}, selectedAccount = '', dirty = false, renderTimer, loaded = false, cloudConfig = {}, cloudState = {}, cloudDiagnostic = {}, syncPermissions = [], testingConnection = false, syncDirty = false, imageDirty = false, imageConfig = {}, imageRows = [], imageRevision = null, loadedImageRevision;
+let logImportEpoch=0,instanceCollectionState={};
 let xProfiles={},xMetrics={},xFollowerConfig={},xFollowerDirty=false,xFollowerQueue={};
 const demo = isDemo ? demoData() : null;
 initializeNavigationIcons();
@@ -37,6 +39,7 @@ const connections=createConnectionsView({node,date,avatar,imageFor:(kind,id)=>im
 const analysisLab=createAnalysisLab({node,date,download,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const research=createResearchView({root:$('researchPanel'),isDemo,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const xProfileView=createXProfileView({node,date,request:message=>chrome.runtime.sendMessage(message),isOpen:()=>$('detail').open,getFollower:(accountId,url)=>xMetrics['xFollowers:'+accountId+':'+url.slice(14)],followersEnabled:()=>xFollowerConfig.enabled===true,enableFollowers:enableXFollowers,getQueue:()=>xFollowerQueue});
+const gameLog=createGameLogView({root:$('gameLogPanel'),request:message=>chrome.runtime.sendMessage(message),download,isDemo});
 const userNotes=createUserNotesView({root:$('userNotes'),request:message=>chrome.runtime.sendMessage(message),isOpen:()=>$('detail').open,sync:syncView});
 function avatar(kind,id,name) {
   const url=imageURLs.get(kind+':'+id);
@@ -69,8 +72,9 @@ function showSyncSkip(response) {
 function tab(name) {
   document.body.dataset.activeTab=name;
   for (const b of document.querySelectorAll('[data-tab]')) { b.classList.toggle('selected', b.dataset.tab === name); b.setAttribute('aria-current', b.dataset.tab === name ? 'page' : 'false'); }
-  for (const id of ['home','analytics','lab','research','connections','friends','ranking','journey','history','settings','help']) $(id + 'Panel').hidden = id !== name;
+  for (const id of ['home','analytics','lab','research','connections','gameLog','friends','ranking','journey','history','settings','help']) $(id + 'Panel').hidden = id !== name;
   if (name === 'analytics' && loaded) renderActivity();
+  if (name === 'gameLog' && loaded) gameLog.update(data,selectedAccount,logImportEpoch,instanceCollectionState);
   if (name === 'connections' && loaded) connections.update(data,selectedAccount,config);
   if (name === 'lab' && loaded) analysisLab.update(data,selectedAccount,config);
   research.update(data,selectedAccount,config);
@@ -392,7 +396,7 @@ async function load() {
   if(isDemo){ data=demo;state=demo.state;config={...DEFAULTS,enabled:true};selectedAccount=demo.accountId;
     $('account').replaceChildren(new Option('デモアカウント',demo.accountId));$('demoFlag').hidden=false;
   } else {
-    const saved=await chrome.storage.local.get(['settings','state','accountMeta','cloudSync','cloudState','cloudDiagnostic','imageCacheSettings','imageCacheState','xProfileCache','xFollowerCache','xFollowerSettings','xFollowerQueue']);xProfiles=saved.xProfileCache||{};xMetrics=Object.fromEntries(followerRecords(saved.xFollowerCache).map(r=>[r.key,r.value]));xFollowerConfig=saved.xFollowerSettings||{};xFollowerQueue=saved.xFollowerQueue||{};imageConfig=saved.imageCacheSettings||{};imageRevision=saved.imageCacheState||{};cloudConfig=saved.cloudSync||{};cloudState=saved.cloudState||{};cloudDiagnostic=saved.cloudDiagnostic||{};syncPermissions=await Promise.all(CLOUD_ORIGINS.map(origin=>chrome.permissions?.contains({origins:[origin]}).catch(()=>null) ?? null));config={...DEFAULTS,...saved.settings};state=saved.state||{};
+    const saved=await chrome.storage.local.get(['settings','state','accountMeta','cloudSync','cloudState','cloudDiagnostic','imageCacheSettings','imageCacheState','xProfileCache','xFollowerCache','xFollowerSettings','xFollowerQueue','logImportEpoch','instanceCollectionState']);logImportEpoch=saved.logImportEpoch||0;instanceCollectionState=saved.instanceCollectionState||{};xProfiles=saved.xProfileCache||{};xMetrics=Object.fromEntries(followerRecords(saved.xFollowerCache).map(r=>[r.key,r.value]));xFollowerConfig=saved.xFollowerSettings||{};xFollowerQueue=saved.xFollowerQueue||{};imageConfig=saved.imageCacheSettings||{};imageRevision=saved.imageCacheState||{};cloudConfig=saved.cloudSync||{};cloudState=saved.cloudState||{};cloudDiagnostic=saved.cloudDiagnostic||{};syncPermissions=await Promise.all(CLOUD_ORIGINS.map(origin=>chrome.permissions?.contains({origins:[origin]}).catch(()=>null) ?? null));config={...DEFAULTS,...saved.settings};state=saved.state||{};
     const accounts=saved.accountMeta||{};
     if(!selectedAccount || !accounts[selectedAccount])selectedAccount=state.accountId||Object.keys(accounts)[0]||'';
     $('account').replaceChildren(...Object.entries(accounts).map(([id,meta])=>new Option(meta.displayName||id,id)));
@@ -404,7 +408,7 @@ async function load() {
   await loadImages();
   if(!xFollowerDirty)$('xFollowerEnabled').checked=xFollowerConfig.enabled===true;
   $('xFollowerStatus').textContent=`保存済みのXアカウント：${Object.values(xMetrics).filter(v=>v.accountId===selectedAccount).length}件 · ${xFollowerConfig.enabled?'取得は有効':'取得は無効'}（保存済みの数値は表示します）`;
-  renderXCollection();xProfileView.refresh();userNotes.refresh(selectedAccount);
+  renderXCollection();xProfileView.refresh();userNotes.refresh(selectedAccount);gameLog.update(data,selectedAccount,logImportEpoch,instanceCollectionState);
   if(!imageDirty)$('imageEnabled').checked=imageConfig.enabled===true;
   $('imageStatus').textContent=`表示中のアカウント：${imageRows.filter(r=>r.blob).length}枚 · ${(imageRows.reduce((n,r)=>n+(r.bytes||0),0)/1048576).toFixed(1)}MiB · 未取得 ${imageRows.filter(r=>!r.blob||r.cachedUrl!==r.url).length}件`;
   if(!dirty){for(const id of ['contact','pollSeconds','retentionDays','offlineRefreshMinutes']){
@@ -459,7 +463,7 @@ $('settingsForm').addEventListener('input',()=>{dirty=true;$('settingsNotice').t
 $('settingsForm').addEventListener('submit',async e=>{e.preventDefault();const values={};for(const id of ['contact','pollSeconds','retentionDays','offlineRefreshMinutes'])values[id]=$(id).value;
   if(Number(values.retentionDays)<config.retentionDays&&!confirm('保存期間を短くします。期間外の履歴が削除されます。続けますか？'))return;
   if(await send({type:'SAVE',settings:values})){dirty=false;$('settingsNotice').textContent='保存しました';await reload();}});
-$('clear').addEventListener('click',async()=>{if(confirm('この端末の全アカウントの記録を削除し、収集・同期を停止します。スプレッドシートの記録は残り、同期を再開すると再取得されます。実行しますか？')&&await send({type:'CLEAR'})){selectedAccount='';await reload();toast('全記録を削除しました。');}});
+$('clear').addEventListener('click',async()=>{if(confirm('この端末の全アカウントの記録を削除し、収集・同期を停止します。スプレッドシートの記録は残り、同期を再開すると再取得されます。実行しますか？')&&await send({type:'CLEAR'})){await gameLog.clear();selectedAccount='';await reload();toast('全記録を削除しました。');}});
 $('closeDetail').addEventListener('click',()=>$('detail').close());
 $('detail').addEventListener('close',()=>{xProfileView.cancel();userNotes.cancel();});
 $('exportCSV').addEventListener('click',()=>exportData('friends'));$('exportJSON').addEventListener('click',()=>exportData('json'));$('exportEvents').addEventListener('click',()=>exportData('events'));

@@ -11,11 +11,12 @@ import { X_FOLLOWER_ORIGINS, followerRecords, mergeFollowerCache } from './x-fol
 import { collectionSeries, stopSeries, updateSeries, compressRun } from './observation-series.js';
 import { officialNote, noteChanges, noteChecks, NOTE_SCAN_INTERVAL, NOTE_CACHE_TTL } from './user-notes.js';
 import { reportSummary, scheduledBoundary, DAY } from './research-model.js';
+import {instanceRoster,reconcileInstancePresence,sameInstance} from './instance-presence.js';
 
 const updateAccounts = createAccountUpdater(chrome.storage.local);
 let collectorPromise,activeReports,noteGeneration=0;
 function collector(){return collectorPromise||=(async()=>{const saved=await chrome.storage.local.get('collectorId');if(saved.collectorId)return saved.collectorId;const id='col_'+crypto.randomUUID().replaceAll('-','');await chrome.storage.local.set({collectorId:id});return id;})();}
-async function recordStop(reason,accountId){if(!accountId)return;const config=await configuration(),collectorId=await collector(),previous=await activeSeries(accountId),at=previous.filter(r=>r.value.collectorId===collectorId).reduce((at,r)=>Math.max(at,r.value.lastSeenAt+1),Date.now());await mergeSyncRecords(stopSeries(previous,{accountId,collectorId,at,pollSeconds:config.pollSeconds,reason}));}
+async function recordStop(reason,accountId){if(!accountId)return;const config=await configuration(),collectorId=await collector(),previous=await activeSeries(accountId),at=previous.filter(r=>r.value.collectorId===collectorId).reduce((at,r)=>Math.max(at,r.value.lastSeenAt+1),Date.now());await mergeSyncRecords([...stopSeries(previous,{accountId,collectorId,at,pollSeconds:config.pollSeconds,reason}),...reconcileInstancePresence(previous,{at,available:false,reason:reason==='paused'?'stopped':'unavailable'},{accountId,collectorId,pollSeconds:config.pollSeconds})]);}
 async function makeReports({accountId='',viewId='',force=false}={}){
   if(profileResetting)return {ok:false,error:'データを整理中です。'};
   if(activeReports)return {ok:true,busy:true};
@@ -123,8 +124,8 @@ async function ensureUA(config) {
   if(await chrome.permissions.contains({origins:['https://api.vrchat.cloud/*']}))rules.push({...rule,id:2,condition:{...rule.condition,urlFilter:'|https://api.vrchat.cloud/api/1/'}});
   await chrome.declarativeNetRequest.updateDynamicRules({removeRuleIds:[1,2],addRules:rules});
 }
-async function request(path, signal, progress, {quiet=false}={}) {
-  if (!(path === '/auth/user' || /^\/auth\/user\/friends\?n=100&offset=\d+&offline=(true|false)$/.test(path) || /^\/worlds\/wrld_[a-zA-Z0-9-]{8,64}$/.test(path) || /^\/userNotes\?n=100&offset=\d+$/.test(path) || /^\/users\/(usr_[a-zA-Z0-9-]{8,64}|[a-zA-Z0-9]{8,32})$/.test(path) || /^\/profile\/(usr_[a-zA-Z0-9-]{8,64}|[a-zA-Z0-9]{8,32})$/.test(path))) throw new ApiError('許可されていないAPIパスです。');
+async function request(path, signal, progress, {quiet=false,instancePath=''}={}) {
+  if (!(instancePath&&path===instancePath&&/^\/instances\/wrld_[a-zA-Z0-9-]{8,64}:[a-zA-Z0-9_%().~-]{1,3072}$/.test(path) || path === '/auth/user' || /^\/auth\/user\/friends\?n=100&offset=\d+&offline=(true|false)$/.test(path) || /^\/worlds\/wrld_[a-zA-Z0-9-]{8,64}$/.test(path) || /^\/userNotes\?n=100&offset=\d+$/.test(path) || /^\/users\/(usr_[a-zA-Z0-9-]{8,64}|[a-zA-Z0-9]{8,32})$/.test(path) || /^\/profile\/(usr_[a-zA-Z0-9-]{8,64}|[a-zA-Z0-9]{8,32})$/.test(path))) throw new ApiError('許可されていないAPIパスです。');
   signal.throwIfAborted();
   const s = await state();
   if (s.cooldownUntil > Date.now()) throw new ApiError('APIの待機時間中です。', 429, String((s.cooldownUntil - Date.now()) / 1000));
@@ -239,9 +240,23 @@ async function collect(signal) {
       }
     }
     const notes=await collectUserNotes(signal,accountId,meta);nextMeta.noteScan=notes.scan;
+    let instanceSnapshot={at:Date.now(),available:false,reason:'現在地を確認できません。'},instanceMe;
+    // Only the freshly authenticated user's own current instance is queried.
+    // This path cannot be supplied by a dashboard message or a friend record.
+    if(me.self.presence==='online'&&me.self.location.kind==='world'&&me.self.location.instanceId){
+      instanceMe=await identity(signal,'In Instanceの現在地を確認中');
+      if(instanceMe.id!==accountId)throw new ApiError('取得中にアカウントが切り替わりました。',403);
+      const own=instanceMe.self;
+      if(own.presence==='online'&&own.location.kind==='world'&&own.location.instanceId){
+        const path='/instances/'+own.location.worldId+':'+encodeURIComponent(own.location.instanceId);
+        try{const raw=await request(path,signal,'In Instanceの参加者一覧を取得中',{instancePath:path});instanceSnapshot=instanceRoster(raw,own,Date.now());}
+        catch(error){if(![403,404].includes(error.status))throw error;instanceSnapshot={at:Date.now(),available:false,reason:'現在のインスタンスの一覧は取得できません（HTTP '+error.status+'）。'};}
+      }
+    }
     // Verify identity again before writing: never attribute another browser account's response to the first.
     const finalMe = await identity(signal, 'アカウントを再確認して保存中');
     if (finalMe.id !== accountId) throw new ApiError('取得中にアカウントが切り替わりました。この巡回は保存せず、停止しました。', 403);
+    if(instanceSnapshot.available&&(!sameInstance(instanceMe?.self.location,finalMe.self.location)||finalMe.self.presence!=='online'||finalMe.self.observedAt-instanceMe.self.observedAt>120000))instanceSnapshot={at:Date.now(),available:false,reason:'一覧取得中に現在地が変わったか、確認間隔が空きました。'};
     signal.throwIfAborted();
     const completedAt = Date.now(), roster = finalMe.friends ? new Set(finalMe.friends) : null;
     const allowed = observations.filter(f => !roster || roster.has(f.id));
@@ -253,7 +268,9 @@ async function collect(signal) {
     const connections=reconcileConnections(previousVisits,previousEncounters,[me.self,finalMe.self],allowed,accountId,{pollSeconds:config.pollSeconds,completedAt,roster});
     const collectorId=await collector(),research=collectionSeries(await activeSeries(accountId),{accountId,collectorId,pollSeconds:config.pollSeconds,samples:[...changes.records,me.self,finalMe.self],completedAt,rosterSize:roster?.size||0,complete:onlinePage.complete&&!(meta.onlineOffset||0)});
     const compactRun=compressRun(await list('runs',accountId),run,collectorId,config.pollSeconds);
-    await commit(changes.records, changes.events, worlds, compactRun, connections,[...research,...noteChanges(await researchKind('userNotes',accountId),notes.samples)]);
+    const instanceRecords=reconcileInstancePresence(await activeSeries(accountId),instanceSnapshot,{accountId,collectorId,pollSeconds:config.pollSeconds});
+    await commit(changes.records, changes.events, worlds, compactRun, connections,[...research,...noteChanges(await researchKind('userNotes',accountId),notes.samples),...instanceRecords]);
+    await chrome.storage.local.set({instanceCollectionState:{accountId,at:instanceSnapshot.at,available:instanceSnapshot.available,count:instanceSnapshot.users?.length||0,complete:instanceSnapshot.complete===true,message:instanceSnapshot.available?'参加者 '+instanceSnapshot.users.length+'人を観測しました。'+(instanceSnapshot.complete?'':'一覧の全件性は未確認です。'):instanceSnapshot.reason}});
     if((await chrome.storage.local.get('imageCacheSettings')).imageCacheSettings?.enabled)await enqueueImages(accountId,images.filter(v=>v&&(v.kind==='world'||!roster||roster.has(v.id))),completedAt);
     nextMeta.lastSuccessAt = completedAt;
     await updateAccounts(accounts => ({...accounts, [accountId]:{...accounts[accountId], ...nextMeta}}));
@@ -383,6 +400,19 @@ async function acceptFollowerObservation(message,sender){
   await mergeFollowers(records);await followerQueue.observed(url,sender.tab.id);void syncQuietly();return {ok:true};
 }
 async function command(message) {
+  if(message.type==='LOG_CONTEXT'){
+    const saved=await chrome.storage.local.get(['accountMeta','logImportEpoch']);
+    if(!saved.accountMeta?.[message.accountId])throw Error('記録済みの表示アカウントを選択してください。');
+    return {ok:true,epoch:saved.logImportEpoch||0};
+  }
+  if(message.type==='IMPORT_LOG_ENCOUNTERS'){
+    const saved=await chrome.storage.local.get(['accountMeta','logImportEpoch']);
+    if(profileResetting||message.epoch!==(saved.logImportEpoch||0))throw Error('記録の削除・設定変更後のためログ取り込みを中止しました。');
+    if(!saved.accountMeta?.[message.accountId]||!Array.isArray(message.records)||message.records.length>100)throw Error('ログの取り込み対象が不正です。');
+    const rows=message.records.map(value=>{if(value.accountId!==message.accountId||!['vrchat-output-log','vrchat-logcat'].includes(value.source))throw Error('ログのアカウントまたは記録元が一致しません。');return normalizeRecord('instanceEncounters',value);});
+    await mergeSyncRecords(rows);await chrome.storage.local.set({logImportState:{updatedAt:Date.now(),accountId:message.accountId}});
+    void syncQuietly();return {ok:true,saved:rows.length};
+  }
   if(message.type==='SAVE_RESEARCH'){
     if(!['annotations','views'].includes(message.kind))throw Error('保存する形式が不正です。');
     const accountId=message.value?.accountId;if(!(await chrome.storage.local.get('accountMeta')).accountMeta?.[accountId])throw Error('記録済みアカウントを選択してください。');
@@ -490,6 +520,8 @@ async function command(message) {
   if (message.type === 'CLEAR') {
     profileResetting=true;followerGeneration++;noteGeneration++;
     try {
+      const logEpoch=(await chrome.storage.local.get('logImportEpoch')).logImportEpoch||0;
+      await chrome.storage.local.set({logImportEpoch:logEpoch+1,logImportState:{},instanceCollectionState:{}});
       await followerQueue.clear();
       await pause();
       await cloud.pause();

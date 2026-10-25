@@ -13,7 +13,7 @@ GASの `/exec` へPOSTし、`Content-Type: text/plain;charset=UTF-8` のJSONを�
 ```
 
 ```json
-{"protocol":2,"ok":true,"datasetId":"UUID","protocols":[1,2],"recordSchemas":[1,2],"operations":["upsert"],"kinds":["friends","events","worlds","runs","accounts","visits","encounters","profiles","xFollowers","segments","crowd","coverage","followerHistory","annotations","views","reports","userNotes","userNoteHistory"],"features":["changeIntervals","monthlyArchives","rangePull"],"maxBatch":100,"retentionDays":0,"serverTime":1792800000000}
+{"protocol":2,"ok":true,"datasetId":"UUID","protocols":[1,2],"recordSchemas":[1,2],"operations":["upsert"],"kinds":["friends","events","worlds","runs","accounts","visits","encounters","profiles","xFollowers","segments","crowd","coverage","followerHistory","annotations","views","reports","userNotes","userNoteHistory","instanceEncounters"],"features":["changeIntervals","monthlyArchives","rangePull"],"maxBatch":100,"retentionDays":0,"serverTime":1792800000000}
 ```
 
 以後の要求には `protocol:2`、`token`、`datasetId` を必ず付けます。
@@ -65,6 +65,7 @@ GASの `/exec` へPOSTし、`Content-Type: text/plain;charset=UTF-8` のJSONを�
 | xFollowers | Xのハンドル（小文字） | URL・フォロワー数・確認日時・概数の区別・取得元 |
 | userNotes | userId | 公式ユーザーノートの最新値と確認日時 |
 | userNoteHistory | userId + `:` + changedAt | 公式ノートの本文変化を確認した時点の記録 |
+| instanceEncounters | id（ログはハッシュ＋行番号、APIは端末＋開始＋相手ID） | 自分のインスタンスのAPI観測／参加・退出ログによる同席区間 |
 | profiles | ユーザーID | Xプロフィールの確認日時・公開URL（最大5件） |
 | encounters | userId + `:` + startedAt | 同席観測区間。visitStartedAt / lastSeenAt / endedAt / relation / location / otherInstanceId |
 
@@ -158,7 +159,7 @@ VRCArchivesはmonth、spreadsheet_id、rows、max_revision、max_observed_atを�
 featuresにrangePullがある場合、別カーソルで次の要求を送れます。
 
 ```json
-{"protocol":2,"action":"range","datasetId":"UUID","token":"YOUR_SYNC_TOKEN","accountId":"usr_example0001","since":1790000000000,"until":1791000000000,"cursor":0,"limit":100,"kinds":["segments","crowd","coverage","followerHistory","events","runs","visits","encounters","worlds","annotations","views","reports","userNotes","userNoteHistory"]}
+{"protocol":2,"action":"range","datasetId":"UUID","token":"YOUR_SYNC_TOKEN","accountId":"usr_example0001","since":1790000000000,"until":1791000000000,"cursor":0,"limit":100,"kinds":["segments","crowd","coverage","followerHistory","events","runs","visits","encounters","worlds","annotations","views","reports","userNotes","userNoteHistory","instanceEncounters"]}
 ```
 
 区間はobservedAtがsince以降、startedAt（なければobservedAt）がuntilより前を候補にします。画面で確認区間を選択期間へ切り詰めます。最新プロフィール・保存条件・メモは時刻制限とは独立です。応答はrecords/cursor/hasMore/datasetId。フィルター前の更新番号でページを進めるため、recordsが空でもhasMoreなら継続してください。条件を変えたらcursor=0に戻します。通常同期のカーソルとは共有しません。
@@ -177,3 +178,14 @@ observedAtは確認時刻、changedAtは現在の本文を初めて記録した�
 userNotesはARCHIVE_KINDSに含め、保存期間・pullのsinceから除外します。userNoteHistoryはHISTORY_KINDSに含め、通常の保持期間・月別アーカイブを適用します。最新値が空になったことも日時優先でマージし、古い値の再送で戻しません。APIの取得失敗・ノート一覧にないことだけでは空欄のレコードを生成しません。
 
 公式APIの読み取りはGET /userNotes?n=100&offset=... とGET /users/{userId}。一覧のuserIdが所有者と一致すること、個別応答のidが対象者と一致すること、取得前後のauth/userが同じ所有者であることを確認します。ノートを編集するPOSTは実装しません。APIの生レスポンス・Cookie・画像URLは保存しません。
+
+
+## In Instance・ログ同席（v0.14.0）
+
+HTTP／レコードスキーマ2・DB4を維持し、19番目の種類 `instanceEncounters` をresearchへ追加します。GAS表は `VRCInstanceEncounters`。共通valueはaccountId, id, sourceId, source, device, userId, displayName, location, worldName, startedAt, lastSeenAt, endedAt, observedAt, endReason, accountBindingです。場所には参加nonce・未許可タグを残しません。終了済みレコードを途中データの再送で再開しません。
+
+ログはsourceがvrchat-output-logまたはvrchat-logcat、deviceがpcまたはquest、accountBindingがlog（本人ID確認済み）またはselected（利用者確認）です。sourceIdは形式・ファイル名・先頭行のSHA-256、idはそのハッシュと参加行番号。終了時はendedAt=lastSeenAt、未確認はnull。endReasonはleft/self-left/world-change/quit、未終了は空です。userIdのない旧ログを別区間と同名だけで統合しません。
+
+APIはsourceがvrchat-instance-api、device=api、accountBinding=api、sourceIdは空、idはcollectorId＋startedAt＋userId。collectorId、pollSeconds、sampleCount、checks（base36差分列）を追加し、同じ区間を更新します。checksの復号末尾はlastSeenAtと一致します。1,024確認・月境界・設定変更で分割します。endReasonはabsent/world-change/unavailable/gap/stopped/continued、継続中は空です。終了時刻は最後に同席を確認できた時刻とし、observedAtはその区間の更新時刻です。欠落一覧や取得失敗から退出を断定しません。
+
+HISTORY_KINDSとして通常の保持期間・月別アーカイブ・期間読み戻しに対応します。生ログ・API応答・画像・Cookieは含めません。返されたデータは公式Web画面との完全一致や全件性を保証せず、別アカウント／別現在地への切替時には保存しません。

@@ -44,9 +44,10 @@ async function harness(handler, allowCloud = true){
   const followerQueue=new vm.SourceTextModule(await fs.readFile(new URL('x-follower-collector.js',root),'utf8'),{context});await followerQueue.link(spec=>spec==='./x-followers.js'?followers:xProfiles);
   const series=new vm.SourceTextModule(await fs.readFile(new URL('observation-series.js',root),'utf8'),{context});await series.link(()=>format);
   const research=new vm.SourceTextModule(await fs.readFile(new URL('research-model.js',root),'utf8'),{context});await research.link(spec=>spec==='./sync-format.js'?format:series);
+  const instancePresence=new vm.SourceTextModule(await fs.readFile(new URL('instance-presence.js',root),'utf8'),{context});await instancePresence.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:series);
   const notes=new vm.SourceTextModule(await fs.readFile(new URL('user-notes.js',root),'utf8'),{context});await notes.link(()=>format);
   const bg=new vm.SourceTextModule(await fs.readFile(new URL('background.js',root),'utf8'),{context});
-  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:spec==='./x-followers.js'?followers:spec==='./x-follower-collector.js'?followerQueue:spec==='./observation-series.js'?series:spec==='./research-model.js'?research:spec==='./user-notes.js'?notes:db);await bg.evaluate();
+  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:spec==='./x-followers.js'?followers:spec==='./x-follower-collector.js'?followerQueue:spec==='./observation-series.js'?series:spec==='./research-model.js'?research:spec==='./user-notes.js'?notes:spec==='./instance-presence.js'?instancePresence:db);await bg.evaluate();
   async function flush(){for(let i=0;i<15;i++)await new Promise(setImmediate);}
   await flush();
   const command=message=>new Promise(resolve=>events.message(message,{id:'testextension',url:'chrome-extension://testextension/dashboard.html'},resolve));
@@ -54,6 +55,42 @@ async function harness(handler, allowCloud = true){
   return {store,saved,calls,alarms,scripts,tabRows,command,start,flush,advance:ms=>{now+=ms;},stop:()=>{closed=true;},events};
 }
 const good=url=>({body:url.pathname.endsWith('/userNotes')?[]:url.pathname.includes('/users/')?{id:fid,displayName:online.displayName,note:''}:url.pathname.endsWith('/auth/user')?owner:url.pathname.endsWith('/friends')?(url.searchParams.get('offline')==='true'?[]:[online]):{id:wid,name:'架空ワールド',capacity:16,unityPackages:[{assetUrl:'SECRET_ASSET'}]}});
+
+test('log import requires a known owner and reset epoch; invalid batches write nothing and need no API',async()=>{
+  const h=await harness(good);h.store.accountMeta={[uid]:{displayName:'Fixture'}};
+  const at=Date.UTC(2026,9,23),value={accountId:uid,id:'a'.repeat(64)+'_2',sourceId:'log_'+'a'.repeat(64),source:'vrchat-output-log',device:'pc',userId:fid,displayName:'Fixture visitor',location:{kind:'world',worldId:wid,instanceId:'123~nonce(SECRET)',access:'public',region:''},worldName:'Fixture',startedAt:at,lastSeenAt:at+60000,endedAt:null,observedAt:at+60000,endReason:'',accountBinding:'selected',raw:'SECRET'};
+  const context=await h.command({type:'LOG_CONTEXT',accountId:uid});assert.equal(context.epoch,0);
+  const command=records=>h.command({type:'IMPORT_LOG_ENCOUNTERS',accountId:uid,epoch:context.epoch,records});
+  assert.equal((await command([value])).ok,true);assert.equal(h.saved.research.length,1);assert.ok(!JSON.stringify(h.saved.research).includes('SECRET'));assert.equal(h.calls.length,0);
+  assert.equal((await command([value,{...value,accountId:'usr_other000001'}])).ok,false);assert.equal(h.saved.research.length,1);
+  assert.equal((await command(Array(101).fill(value))).ok,false);assert.equal((await h.command({type:'LOG_CONTEXT',accountId:'usr_other000001'})).ok,false);
+  let answered=false;assert.equal(h.events.message({type:'IMPORT_LOG_ENCOUNTERS',accountId:uid,epoch:0,records:[value]},{id:'testextension',url:'https://vrchat.com/'},()=>{answered=true;}),false);assert.equal(answered,false);
+  await h.command({type:'CLEAR'});assert.equal(h.store.logImportEpoch,1);assert.equal((await command([value])).ok,false);assert.equal(h.saved.research.length,0);assert.equal(h.calls.length,0);h.stop();
+});
+
+test('In Instance collects only the fresh own location, including nonfriends, and keeps unavailable observations separate',async()=>{
+  const peer='usr_instancepeer0001',place=wid+':123~region(jp)';let available=true;
+  const h=await harness(url=>url.pathname.endsWith('/auth/user')?{body:{...owner,location:place}}:url.pathname.includes('/instances/')?{body:{id:place,userCount:2,...(available?{users:[{id:uid,displayName:'Self'},{id:peer,displayName:'Nonfriend',authToken:'SECRET'}]}:{})}}:good(url));
+  try{await h.start();const rows=()=>h.saved.research.filter(r=>r.kind==='instanceEncounters');assert.equal(rows().length,1);assert.equal(rows()[0].value.userId,peer);assert.equal(h.saved.friends.some(r=>r.id===peer),false);assert.equal(h.store.instanceCollectionState.available,true);assert.ok(!JSON.stringify(rows()).includes('SECRET'));
+    h.advance(180000);await h.command({type:'POLL'});await h.flush();assert.equal(rows().length,1);assert.equal(rows()[0].value.sampleCount,2);const last=rows()[0].value.lastSeenAt;
+    available=false;h.advance(180000);await h.command({type:'POLL'});await h.flush();assert.equal(rows()[0].value.endedAt,last);assert.equal(rows()[0].value.endReason,'unavailable');assert.equal(h.store.instanceCollectionState.available,false);
+    const calls=h.calls.filter(c=>c.url.includes('/instances/'));assert.equal(calls.length,3);assert.ok(calls.every(c=>decodeURIComponent(c.url).endsWith(place)&&c.options.method==='GET'));
+  }finally{h.stop();}
+});
+test('In Instance rejects a changed account/location and respects server backoff without exploring friend instances',async()=>{
+  for(const mode of ['account','location','429','403']){
+    let fetched=false;const place=wid+':123',h=await harness(url=>{
+      if(url.pathname.endsWith('/auth/user'))return {body:{...owner,id:fetched&&mode==='account'?'usr_otherowner001':uid,location:fetched&&mode==='location'?wid+':456':place}};
+      if(url.pathname.includes('/instances/')){fetched=true;return mode==='429'||mode==='403'?{status:Number(mode),headers:{'Retry-After':'3600'}}:{body:{id:place,userCount:2,users:[{id:uid,displayName:'Self'},{id:fid,displayName:'Friend'}]}};}
+      return good(url);
+    });
+    try{await h.start();assert.equal(h.saved.research.filter(r=>r.kind==='instanceEncounters').length,0);assert.equal(h.calls.filter(c=>c.url.includes('/instances/')).length,1);
+      if(mode==='account')assert.equal(h.saved.friends.length,0);
+      if(mode==='429'){const count=h.calls.length;await h.command({type:'POLL'});await h.flush();assert.equal(h.calls.length,count);assert.ok(h.store.state.cooldownUntil);}
+      if(mode==='403')assert.equal(h.store.state.phase,'ready');
+    }finally{h.stop();}
+  }
+});
 
 test('full cycle stores normalized observations, GET-only, credentials handled by browser',async()=>{
   const h=await harness(good);await h.start();
@@ -100,7 +137,7 @@ test('cloud configuration requires optional Google permissions and cannot alter 
   assert.equal(response.ok,false);assert.match(response.error,/権限/);assert.equal(h.store.cloudSync,undefined);assert.equal(h.calls.length,0);h.stop();
 });
 test('cloud setup schedules sync, uses no VRChat cookies, and clearing local records disables sync',async()=>{
-  const h=await harness((url,n,options)=>({body:JSON.parse(options.body).action==='hello'?{protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles','xFollowers','segments','crowd','coverage','followerHistory','annotations','views','reports','userNotes','userNoteHistory'],retentionDays:0,maxBatch:100}:{protocol:2,ok:true,datasetId:'test',records:[],cursor:0,hasMore:false}}));
+  const h=await harness((url,n,options)=>({body:JSON.parse(options.body).action==='hello'?{protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles','xFollowers','segments','crowd','coverage','followerHistory','annotations','views','reports','userNotes','userNoteHistory','instanceEncounters'],retentionDays:0,maxBatch:100}:{protocol:2,ok:true,datasetId:'test',records:[],cursor:0,hasMore:false}}));
   const response=await h.command({type:'SAVE_SYNC',settings:{enabled:true,endpoint:'https://script.google.com/macros/s/test/exec',token:'test_token_0123456789_abcdefghijklmnopqrstuvwxyz'}});
   assert.equal(response.ok,true);await h.flush();assert.equal(h.store.cloudState.phase,'ready');
   assert.equal(h.calls.length,2);assert.equal(h.calls[0].options.credentials,'omit');assert.equal(h.calls[0].options.method,'POST');
@@ -121,7 +158,7 @@ test('image collection is opt-in and candidates are queued only after the accoun
 });
 
 test('connection test command uses saved settings and performs one hello without enabling sync',async()=>{
-  const hello={protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles','xFollowers','segments','crowd','coverage','followerHistory','annotations','views','reports','userNotes','userNoteHistory'],retentionDays:0,maxBatch:100};
+  const hello={protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles','xFollowers','segments','crowd','coverage','followerHistory','annotations','views','reports','userNotes','userNoteHistory','instanceEncounters'],retentionDays:0,maxBatch:100};
   const h=await harness(()=>({body:hello}));
   await h.command({type:'SAVE_SYNC',settings:{enabled:false,endpoint:'https://script.google.com/macros/s/test/exec',token:'test_token_0123456789_abcdefghijklmnopqrstuvwxyz'}});
   assert.equal(h.calls.length,0);const response=await h.command({type:'TEST_SYNC'});assert.equal(response.connected,true);assert.equal(h.calls.length,1);

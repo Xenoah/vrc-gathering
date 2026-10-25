@@ -21,6 +21,7 @@ with ZipFile(root/'dist'/('vrc-gathering-v'+version+'.zip')) as archive:
             assert struct.unpack('>II',raw[16:24])==(int(size),int(size))
     for name in ['Code.gs','Protocol.gs','appsscript.json']:
         assert archive.read('vrc-gathering/extension/setup/'+name)==archive.read('vrc-gathering/gas/'+name)
+    assert archive.read('vrc-gathering/extension/setup/Watch-VRChatLogs.ps1')==archive.read('vrc-gathering/windows/Watch-VRChatLogs.ps1')
 `],{cwd:fileURLToPath(new URL('..',import.meta.url)),encoding:'utf8'});
   assert.equal(check.status,0,check.stderr || check.stdout);
 });

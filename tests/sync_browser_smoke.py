@@ -35,7 +35,7 @@ try:
                   let response;
                   if(fixture.mode==='html')response=new Response('<html>Sign in</html>',{headers:{'Content-Type':'text/html'}});
                   else if(fixture.mode==='auth')response=new Response(JSON.stringify({protocol:2,ok:false,code:'AUTH'}));
-                  else response=new Response(JSON.stringify(body.action==='hello'?{protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles','xFollowers','segments','crowd','coverage','followerHistory','annotations','views','reports','userNotes','userNoteHistory'],retentionDays:0,maxBatch:100}:{protocol:2,ok:true,datasetId:'test',records:[],cursor:0,hasMore:false}));
+                  else response=new Response(JSON.stringify(body.action==='hello'?{protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles','xFollowers','segments','crowd','coverage','followerHistory','annotations','views','reports','userNotes','userNoteHistory','instanceEncounters'],retentionDays:0,maxBatch:100}:{protocol:2,ok:true,datasetId:'test',records:[],cursor:0,hasMore:false}));
                   Object.defineProperty(response,'url',{value:'https://script.googleusercontent.com/macros/echo?user_content_key=PRIVATE_REDIRECT_TOKEN'});return response;
                 }});
                 if(message.type==='TEST_SYNC')return {ok:true,...await client.testConnection()};

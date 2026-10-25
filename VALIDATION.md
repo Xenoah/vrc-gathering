@@ -204,3 +204,20 @@ Chromiumでchrome.storageの変更通知を発生させ、入力途中のメモ�
 - `python3 tests/x_collection_browser_smoke.py`: 実際のChromiumで3タブ同時表示、未取得4件を更新2件より先に処理、途中の重複要求、画面再読み込み、個別の自動／手動取得、利用制限、手動タブ保護、390px表示を検証。
 - `python3 tests/x_profile_browser_smoke.py`: Xリンク・フォロワー数の更新と並べ替え、ヘッダーの正確値／概数、既存のステータス色・アカウント切替を回帰検証。
 - 拡張JS全ファイルとGASの構文検査が成功。XのHTML・Chrome APIの接続部分はテスト用フィクスチャで、処理・保存・画面は実装を使用。実Xアカウントおよびユーザー端末への導入は未検証。
+
+
+## 全ユーザー同席：In Instance・PCログ（v0.14.0 / 2026-10-25）
+
+- Node 206件成功。新しいテストはログの参加・退出・再参加・ワールド移動・終了、日時／時差・旧形式・自己除外・未知ID、重複区間の和集合、本人不一致、途中ログの再送、式文字列、GAS往復／旧GAS互換を確認します。
+- In Instanceは現在地を直前に再取得し、その本人の場所だけをGETします。非フレンドも返されたID・表示名を対象にし、本人／現在地の切替、一覧欠落、不正応答、部分一覧、403／404、429の待機、収集停止・観測間隔の空き、確認時刻の差分保存を架空レスポンスで検証しました。
+- Chromiumの `tests/game_log_browser_smoke.py` は実際のdashboard・worker・IndexedDBを使用。ファイル取り込み、フォルダー監視、追記された退出、現在のフレンド／非フレンド、重複コピー、検索・詳細・CSV、アカウント切替、削除後の遅延保存拒否、390px表示とAPI記録の表示を確認しました。フォルダーはOPFSの実ハンドルを使い、選択・許可の応答はモックです。実PCのフォルダー権限を検証したものではありません。
+- `tests/connections_browser_smoke.py` は既存の自分・つながり画面、旧DBからの移行、画像・JSON保持の回帰確認で成功しました。GASは共有Protocolの生成とES2020構文検査を実施します。
+- Windows補助は原本を変更せず、参加・退出等の許可行と最終ログ時刻だけを別フォルダーへコピーします。会話・API本文・参加nonceを除外します。`tests/game_log_mirror.test.ps1` をWindows PowerShellで実行するCIジョブを追加しました。
+- 実VRChatアカウント、実Quest、ユーザー端末へのインストール／設定変更は試していません。APIが全ての参加者を返すと断定せず、取得元・時刻・未取得結果を画面へ表示します。PC停止中のQuest単体の常時収集は提供しません。
+
+確認した公開資料：
+
+- [VRChat公式：PCのoutput_logの場所](https://github.com/vrchat-community/creator-docs/blob/f437f5081c4476aaf443b507a7ec4a9d21e0e63b/Docs/docs/worlds/udon/debugging-udon-projects.md)
+- [VRCXのログ形式の参照](https://github.com/vrcx-team/VRCX/blob/869a5dd7ae19cc9e4879a4a63b59677c17291a36/Dotnet/LogWatcher.cs)。参加・退出・部屋・終了メッセージを確認し、パーサーは独自実装。テストの人物とワールドは全て架空です。
+- [コミュニティAPI仕様：Instance.users](https://github.com/vrchatapi/specification/blob/850f01edf968dc4baa13c09e96d8a8d75686a3eb/openapi/components/schemas/Instance.yaml)。記載条件は要求者が作成したインスタンス。公式Webの表示とAPI応答の完全一致は実アカウント未検証です。
+- [VRCXのQuestログ取得に関する既存報告](https://github.com/vrcx-team/VRCX/issues/1327)。当該報告の制約と、HTTPの参加者一覧は別の情報源として扱います。

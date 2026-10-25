@@ -4,10 +4,16 @@ const SYNC_PROTOCOL = 2;
 const RECORD_SCHEMA = 2;
 const SYNC_BATCH_SIZE = 100;
 const LEGACY_SYNC_KINDS = ['friends', 'events', 'worlds', 'runs', 'accounts'];
-const RESEARCH_KINDS = ['segments','crowd','coverage','followerHistory','annotations','views','reports','userNotes','userNoteHistory'];
+const RESEARCH_KINDS = ['segments','crowd','coverage','followerHistory','annotations','views','reports','userNotes','userNoteHistory','instanceEncounters'];
 const SYNC_KINDS = [...LEGACY_SYNC_KINDS, 'visits', 'encounters', 'profiles', 'xFollowers', ...RESEARCH_KINDS];
 const ARCHIVE_KINDS = ['profiles','xFollowers','annotations','views','userNotes'];
-const HISTORY_KINDS = ['events','runs','visits','encounters','segments','crowd','coverage','followerHistory','reports','userNoteHistory'];
+const HISTORY_KINDS = ['events','runs','visits','encounters','segments','crowd','coverage','followerHistory','reports','userNoteHistory','instanceEncounters'];
+// Keep only public instance identifiers and routing labels, never join nonces.
+function logInstanceId(value) {
+  if(typeof value!=='string'||!/^\d{1,20}(?:~|$)/.test(value))return '';
+  const parts=value.split('~');
+  return [parts[0],...parts.slice(1).filter(v=>/^(?:(?:private|hidden|friends)\(usr_[a-zA-Z0-9-]{8,64}\)|group\(grp_[a-zA-Z0-9-]{8,64}\)|region\([a-z0-9-]{1,20}\)|groupAccessType\((?:public|plus|members)\)|canRequestInvite)$/.test(v))].join('~');
+}
 // Exact observation times, encoded as base-36 deltas rather than repeated state snapshots.
 function decodeChecks(startedAt, checks='') {
   if(typeof checks!=='string'||checks.length>6000)throw Error('SCHEMA');
@@ -66,6 +72,20 @@ function normalizeRecord(kind, input, now = Date.now()) {
       Object.assign(value,{url:input.url,followers:count(input.followers),approximate:input.approximate,source:'x-profile'});key=input.url.slice(14);
     }
     key=input.collectorId+':'+key+':'+startedAt;
+  } else if(kind==='instanceEncounters'){
+    const startedAt=time(input.startedAt),lastSeenAt=time(input.lastSeenAt),endedAt=optionalTime(input.endedAt),place=loc(input.location);
+    place.instanceId=logInstanceId(place.instanceId);
+    const api=input.source==='vrchat-instance-api',reasons=api?['','absent','world-change','unavailable','gap','stopped','continued']:['','left','self-left','world-change','quit'];
+    if(typeof input.id!=='string'||!/^[a-zA-Z0-9_-]{8,180}$/.test(input.id)||(!api&&!/^log_[a-f0-9]{64}$/.test(input.sourceId||''))||input.userId&&!id(input.userId)||input.userId===accountId||place.kind!=='world'||!place.instanceId||
+      !['vrchat-output-log','vrchat-logcat','vrchat-instance-api'].includes(input.source)||input.device!==(api?'api':input.source==='vrchat-output-log'?'pc':'quest')||!(api?['api']:['log','selected']).includes(input.accountBinding)||
+      startedAt>lastSeenAt||lastSeenAt>observedAt||endedAt!=null&&(endedAt!==lastSeenAt||endedAt>observedAt)||!reasons.includes(input.endReason)||
+      (endedAt==null)!==(input.endReason===''))throw Error('参加・退出ログの形式が不正です。');
+    value={accountId,id:input.id,sourceId:input.sourceId,source:input.source,device:input.device,userId:input.userId||'',displayName:str(input.displayName,128),location:place,worldName:str(input.worldName,256),startedAt,lastSeenAt,endedAt,observedAt,endReason:input.endReason,accountBinding:input.accountBinding};key=input.id;
+    if(api){
+      if(!token(input.collectorId)||!id(input.userId))throw Error('SCHEMA');
+      const checks=input.checks||'',times=decodeChecks(startedAt,checks);if(times[times.length-1]!==lastSeenAt)throw Error('SCHEMA');
+      Object.assign(value,{sourceId:'',collectorId:input.collectorId,checks,sampleCount:times.length,pollSeconds:Number.isInteger(input.pollSeconds)&&input.pollSeconds>=60&&input.pollSeconds<=3600?input.pollSeconds:180});
+    }
   } else if(kind==='userNotes'||kind==='userNoteHistory'){
     if(!id(input.userId)||input.source!=='vrchat-user-note'||typeof input.note!=='string'||input.note.length>8000)throw Error('公式ノートの形式が不正です。');
     const changedAt=time(input.changedAt),createdAt=optionalTime(input.createdAt);if(changedAt>observedAt)throw Error('公式ノートの日時が不正です。');
@@ -144,6 +164,7 @@ function normalizeRecord(kind, input, now = Date.now()) {
   return { kind, key: kind + ':' + accountId + ':' + key, schemaVersion:RECORD_SCHEMA, operation:'upsert', value };
 }
 function newerRecord(next, previous) {
+  if(previous&&next.kind==='instanceEncounters'&&previous.kind==='instanceEncounters'&&(next.value.endedAt==null)!==(previous.value.endedAt==null))return next.value.endedAt!=null;
   return !previous || next.value.observedAt > previous.value.observedAt ||
     (next.value.observedAt === previous.value.observedAt && canonical(next.value) > canonical(previous.value));
 }

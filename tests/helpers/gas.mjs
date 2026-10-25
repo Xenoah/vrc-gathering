@@ -5,7 +5,7 @@ export function gasHarness() {
   const properties={SPREADSHEET_ID:'test-sheet',SYNC_TOKEN:TOKEN,RETENTION_DAYS:'30'}, books=new Map();
   let locked=false,opens=0,uuid=0;const logs=[];
   function book(id){if(!books.has(id))books.set(id,new Map());return books.get(id);}
-  function makeSheet(cells){let maxRows=Math.max(1000,cells.length),maxColumns=26;return {getMaxRows:()=>maxRows,getMaxColumns:()=>maxColumns,insertRowsAfter:(after,n)=>{maxRows+=n;},insertColumnsAfter:(after,n)=>{maxColumns+=n;},getLastRow:()=>cells.length,setFrozenRows:()=>{},deleteRows:(start,n)=>cells.splice(start-1,n),
+  function makeSheet(cells){let maxRows=Math.max(1000,cells.length),maxColumns=Math.max(26,...cells.map(row=>row.length));return {getMaxRows:()=>maxRows,getMaxColumns:()=>maxColumns,insertRowsAfter:(after,n)=>{maxRows+=n;},insertColumnsAfter:(after,n)=>{maxColumns+=n;},getLastRow:()=>cells.length,setFrozenRows:()=>{},deleteRows:(start,n)=>cells.splice(start-1,n),
     getRange:(r,c,n,m)=>{if(r+n-1>maxRows||c+m-1>maxColumns)throw Error('Range exceeds grid');return ({getValues:()=>Array.from({length:n},(_,i)=>Array.from({length:m},(_,j)=>cells[r-1+i]?.[c-1+j]??'')),
       setValues:values=>{for(let i=0;i<n;i++){cells[r-1+i]||=[];for(let j=0;j<m;j++)cells[r-1+i][c-1+j]=values[i][j];}}});}};}
   function apiBook(id){const tables=book(id);return {getId:()=>id,getSheetByName:name=>tables.has(name)?makeSheet(tables.get(name)):null,insertSheet:name=>{const cells=[];tables.set(name,cells);return makeSheet(cells);}};}

@@ -9,6 +9,13 @@ permissions:
   contents: read
 
 jobs:
+  windows-log-helper:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Verify filtered log mirror on Windows PowerShell
+        shell: powershell
+        run: ./tests/game_log_mirror.test.ps1
   test:
     runs-on: ubuntu-latest
     steps:
