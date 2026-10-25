@@ -31,6 +31,18 @@ try:
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.goto(base + '/dashboard.html?demo=1')
             expect(page.locator('#friendsBody tr')).to_have_count(9)
+            # New A/B/C initial screen must not expose the legacy friends panel underneath.
+            expect(page.locator('#homePanel')).to_be_visible()
+            expect(page.locator('#friendsPanel')).to_be_hidden()
+            page.locator('[data-tab=analytics]').click()
+            expect(page.locator('#analyticsPanel')).to_be_visible()
+            assert page.locator('#activityTimeline .activity-row').count() > 0
+            page.locator('#activityWorld').select_option('wrld_demoobservatory')
+            expect(page.locator('#activityWorld')).to_have_value('wrld_demoobservatory')
+            assert page.locator('#activityTimeline .activity-row').count() > 0
+            page.locator('[data-tab=friends]').click()
+            expect(page.locator('#friendsPanel')).to_be_visible()
+            expect(page.locator('#friendsBody th')).to_contain_text(['フレンド','最終観測状態','ワールド / インスタンス','種類 / 地域','観測上の継続','観測日時'])
             assert page.locator('.brand-icon').evaluate('(img) => img.complete && img.naturalWidth === 128')
             page.locator('[data-tab=help]').click()
             page.locator('#helpPanel [data-open-gas-setup]').click()
