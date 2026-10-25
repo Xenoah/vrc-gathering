@@ -1,32 +1,9 @@
 // Local, observation-based activity analysis. No hidden VRChat locations are inferred.
-export const ACTIVITY_NAMESPACE = 'vrc.activity';
+import { ACTIVITY_NAMESPACE } from './core.js';
+export { continuityMetadata } from './core.js';
 
 const validStart = (value, upper) =>
   Number.isSafeInteger(value) && value > 0 && value <= upper;
-
-export function continuityMetadata(previous, current) {
-  const time = current.observedAt;
-  const old = previous?.extensions?.[ACTIVITY_NAMESPACE] || {};
-  const sameFriend = !!previous && previous.isFriend === current.isFriend;
-  const samePresence = sameFriend && previous.presence === current.presence;
-  const a = previous?.location || {}, b = current.location || {};
-  const samePlace = samePresence && a.kind === b.kind && a.worldId === b.worldId;
-  const sameInstance = samePlace && a.instanceId === b.instanceId;
-  const prior = (key, same) => {
-    if (!same) return time;
-    // Legacy data has no independent continuity fields. StateFirstObservedAt
-    // is conservative: display name or status edits could have reset it.
-    const fallback = previous.stateFirstObservedAt || previous.observedAt;
-    const since = validStart(old[key], previous.observedAt) ? old[key] :
-      validStart(fallback, previous.observedAt) ? fallback : previous.observedAt;
-    return Math.min(time, since);
-  };
-  return {
-    presenceSince: prior('presenceSince', samePresence),
-    placeSince: prior('placeSince', samePlace),
-    instanceSince: prior('instanceSince', sameInstance)
-  };
-}
 
 export function formatObservedDuration(milliseconds) {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return '未確認';
