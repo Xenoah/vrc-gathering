@@ -1,4 +1,5 @@
 import { DEFAULTS, csv, VERSION } from './core.js';
+import { observedDurations, formatObservedDuration, buildActivityTimeline, changesByHour, ACTIVITY_LABELS } from './activity-analysis.js';
 import { exportAccount, cachedImages } from './db.js';
 import { demoData } from './demo.js';
 import { rankWorlds, worldJourney, worldNetwork, sortFriends, sortWorlds } from './insights.js';
@@ -47,7 +48,8 @@ function showSyncSkip(response) {
 
 function tab(name) {
   for (const b of document.querySelectorAll('[data-tab]')) { b.classList.toggle('selected', b.dataset.tab === name); b.setAttribute('aria-current', b.dataset.tab === name ? 'page' : 'false'); }
-  for (const id of ['friends','ranking','journey','history','settings','help']) $(id + 'Panel').hidden = id !== name;
+  for (const id of ['home','analytics','friends','ranking','journey','history','settings','help']) $(id + 'Panel').hidden = id !== name;
+  if (name === 'analytics' && loaded) renderActivity();
 }
 const worldName = id => data.worlds.find(w => w.id === id)?.name || id;
 function place(f) { const l = f?.location; return l?.kind === 'world' ? worldName(l.worldId) : ({ private:'所在非公開', offline:'オフライン', traveling:'移動中', web:'ワールド情報なし', unknown:'所在不明' }[l?.kind] || '不明'); }
@@ -82,13 +84,23 @@ function render() {
     statusCell.append(node('span', f.status ? statusNames[f.status] || f.status : '', 'sub'));
     const placeCell = node('td'); placeCell.append(node('span', place(f), 'world-name'), node('span', shortId(f.location.instanceId,38), 'sub'));
     const typeCell = node('td'); typeCell.append(node('span', accessNames[f.location.access] || f.location.access || '—'), node('span', f.location.region?.toUpperCase() || '—', 'sub'));
+    const durationCell = node('td'), duration = observedDurations(f);
+    if (duration) {
+      durationCell.append(node('span', (f.presence==='online'?'接続 ':'状態 ')+formatObservedDuration(duration.presence), 'duration-value'));
+      if (f.presence==='online' && f.location?.kind==='world')
+        durationCell.append(node('span','同一ワールド '+formatObservedDuration(duration.place),'duration-value-secondary'));
+      if (stale(f)) durationCell.append(node('span','最終確認時点まで','sub'));
+    } else durationCell.textContent = '—';
+    durationCell.title = '観測された状態から算出。実際の開始時刻や未観測期間の継続は保証されません。';
     const timeCell = node('td'); timeCell.append(node('span', date(f.observedAt))); if(stale(f)) timeCell.append(node('span','古い観測','sub'));
-    tr.append(nameCell,statusCell,placeCell,typeCell,timeCell); body.append(tr);
+    tr.append(nameCell,statusCell,placeCell,typeCell,durationCell,timeCell); body.append(tr);
   }
-  if (rows.length > 1000) { const tr=node('tr'),td=node('td','画面には先頭1,000件を表示しています。検索で絞り込むかCSVで全件を確認できます。');td.colSpan=5;tr.append(td);body.append(tr); }
-  if (!rows.length && data.friends.length) { const tr=node('tr'),td=node('td','条件に一致するフレンドはいません。');td.colSpan=5;tr.append(td);body.append(tr); }
+  if (rows.length > 1000) { const tr=node('tr'),td=node('td','画面には先頭1,000件を表示しています。検索で絞り込むかCSVで全件を確認できます。');td.colSpan=6;tr.append(td);body.append(tr); }
+  if (!rows.length && data.friends.length) { const tr=node('tr'),td=node('td','条件に一致するフレンドはいません。');td.colSpan=6;tr.append(td);body.append(tr); }
   renderHistory($('historyList'), data.events);
   renderInsights();
+  renderHome();
+  renderActivity();
   renderCloud();
   const phases = { running:'取得中', ready:'収集中', paused:'停止中', waiting:'待機中', attention:'要確認' };
   $('phase').textContent = phases[state.phase] || '停止中'; $('phaseDot').className='status-dot ' + (state.phase || '');
@@ -99,6 +111,118 @@ function render() {
   $('refresh').disabled = isDemo || !config.enabled || state.phase === 'running' || state.cooldownUntil > Date.now();
   for(const id of ['exportCSV','exportJSON','exportEvents']) $(id).disabled = !selectedAccount;
 }
+function renderHome() {
+  const fresh=data.friends.filter(f=>f.isFriend && !stale(f));
+  const live=fresh.filter(f=>f.presence==='online').length;
+  const ranked=rankWorlds(data.friends,data.worlds,{pollSeconds:config.pollSeconds});
+  const title='ゲーム内 '+live+'人 / ワールド公開 '+ranked.reduce((n,w)=>n+w.count,0)+'人 / 最新観測ワールド '+ranked.length+'件。';
+  $('homeSummary').textContent=title+' 数値は自分が観測できたフレンドのみの集計です。';
+  renderHistory($('homeRecent'),data.events.slice(0,5));
+  const holder=$('homeWorlds');holder.replaceChildren();
+  if (!ranked.length) {
+    holder.append(node('p','最新の公開ワールド情報はありません。','activity-empty')); return;
+  }
+  for (const item of ranked.slice(0,8)) {
+    const row=node('div',null,'home-world-row');
+    const link=node('a',item.name);link.href='https://vrchat.com/home/world/'+encodeURIComponent(item.id);
+    link.rel='noreferrer';link.target='_blank';
+    const name=node('strong');name.append(link);
+    row.append(name,node('small',String(item.count)+'人 / '+String(item.instances)+'インスタンス'));
+    holder.append(row);
+  }
+}
+const activityAxisFormat=new Intl.DateTimeFormat('ja-JP',{
+  timeZone:'Asia/Tokyo',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false
+});
+function renderActivity() {
+  // Keep dashboard initialization and normal refreshes cheap while Analytics is hidden.
+  if ($('analyticsPanel').hidden) return;
+  const hours=Number($('activityRange').value)||24;
+  const worldSelect=$('activityWorld');
+  const previousWorld=worldSelect.value;
+  const worlds=new Map(data.worlds.map(w=>[w.id,w.name||w.id]));
+  for(const f of data.friends)if(f.location?.kind==='world')worlds.set(f.location.worldId,worlds.get(f.location.worldId)||f.location.worldId);
+  for(const e of data.journeyEvents||data.events) {
+    for(const entry of [e.previous,e.current])if(entry?.location?.kind==='world') {
+      const id=entry.location.worldId; worlds.set(id,worlds.get(id)||id);
+    }
+  }
+  worldSelect.replaceChildren(new Option('すべてのワールド',''),
+    ...[...worlds].sort((a,b)=>a[1].localeCompare(b[1],'ja')).map(([id,name])=>new Option(name,id)));
+  if(worlds.has(previousWorld))worldSelect.value=previousWorld;
+  const timeline=buildActivityTimeline(data.friends,data.journeyEvents||data.events,data.worlds,{
+    now:Date.now(),rangeMs:hours*3600000,filter:$('activityFilter').value,
+    worldId:worldSelect.value,query:$('activitySearch').value,pollSeconds:config.pollSeconds,limit:120
+  });
+  const runs=(data.runs||[]).filter(r=>r.observedAt>=timeline.start && r.observedAt<=timeline.end);
+  $('activitySummary').textContent=String(timeline.total)+'ユーザー / 表示 '+String(timeline.rows.length)+
+    '人 / 成功した収集 '+String(runs.length)+'回（表示期間）。'+
+    (timeline.truncated?'先頭120人を表示。検索で絞り込めます。':'')+
+    ' 最後の観測より後は塗りません。';
+  const graph=$('activityTimeline');graph.replaceChildren();
+  const axis=node('div',null,'activity-axis'),side=node('div',null,'activity-axis-label');
+  side.append(node('span','ユーザー'),node('span','t →','axis-t'));
+  const ruler=node('div',null,'activity-axis-track');
+  for(let i=0;i<=4;i++){
+    const tick=node('span',activityAxisFormat.format(timeline.start+(timeline.end-timeline.start)*i/4),'activity-axis-tick');
+    tick.style.left=String(i*25)+'%';
+    ruler.append(tick);
+  }
+  axis.append(side,ruler);graph.append(axis);
+  const scale=100/(timeline.end-timeline.start);
+  for(const item of timeline.rows) {
+    const row=node('div',null,'activity-row'),left=node('div',null,'activity-user'),track=node('div',null,'activity-track');
+    const button=node('button'),label=node('span',null,'activity-user-text');
+    const duration=observedDurations(item.friend);
+    label.append(node('strong',item.name),
+      node('small',duration ? '状態 '+formatObservedDuration(duration.presence)+'（最終観測まで）' : '履歴のみ'));
+    button.append(avatar('user',item.id,item.name),label);
+    button.disabled=!item.friend;
+    if(item.friend)button.addEventListener('click',()=>showDetail(item.friend));
+    left.append(button);
+    for(const segment of item.segments) {
+      const bar=node('button',null,'activity-segment state-'+segment.kind+' '+segment.confidence);
+      bar.type='button';
+      bar.style.left=String((segment.start-timeline.start)*scale)+'%';
+      bar.style.width=String(Math.max(.12,(segment.end-segment.start)*scale))+'%';
+      const world=segment.worldId ? ' / '+(timeline.worldNames.get(segment.worldId)||segment.worldId) : '';
+      const note=segment.confidence==='estimated'?'推定区間（途中の状態は未確認）':'近接する同状態の観測点間';
+      const description=(ACTIVITY_LABELS[segment.kind]||segment.kind)+world+' / '+
+        date(segment.start)+' ～ '+date(segment.end)+' / '+note;
+      bar.title=description;bar.setAttribute('aria-label',item.name+'：'+description);
+      bar.disabled=!item.friend;
+      if(item.friend)bar.addEventListener('click',()=>showDetail(item.friend));
+      track.append(bar);
+    }
+    const pts=item.points.length>180
+      ? item.points.filter((p,i)=>i===0||i===item.points.length-1||i%Math.ceil(item.points.length/180)===0)
+      : item.points;
+    for(const point of pts){
+      const mark=node('span',null,'activity-mark');
+      mark.style.left=String((point.at-timeline.start)*scale)+'%';
+      mark.title='観測：'+date(point.at)+' / '+(ACTIVITY_LABELS[
+        point.state.isFriend===false?'removed':
+        point.state.presence==='online'?(point.state.location?.kind==='world'?'world':point.state.location?.kind==='private'?'private':'online-unknown'):
+        point.state.presence==='active'?'active':point.state.presence==='offline'?'offline':'unknown'] || '不明');
+      track.append(mark);
+    }
+    row.append(left,track);graph.append(row);
+  }
+  if (!timeline.rows.length)graph.append(node('p','この期間・検索条件に該当する観測がありません。','activity-empty'));
+  const counts=changesByHour(data.journeyEvents||data.events,timeline.start),max=Math.max(1,...counts);
+  const histogram=$('activityHourly');histogram.replaceChildren();
+  histogram.setAttribute('aria-label','時間帯ごとの状態変更イベント数：'+counts.map((c,i)=>String(i)+'時 '+String(c)+'件').join('、'));
+  for(let i=0;i<24;i++){
+    const slot=node('div',null,'hour-slot');
+    const bar=node('div',null,'hour-bar');
+    bar.style.height=String(Math.max(1,Math.round(counts[i]/max*115)))+'px';
+    const title=String(i)+'時台：'+String(counts[i])+'件';
+    slot.title=title;bar.title=title;
+    slot.append(bar,node('span',String(i).padStart(2,'0'),'hour-label'));
+    histogram.append(slot);
+  }
+}
+
 function renderInsights() {
   const ranked = rankWorlds(data.friends, data.worlds, {pollSeconds:config.pollSeconds});
   const ranking = $('worldRanking'); ranking.replaceChildren();
@@ -213,6 +337,12 @@ function showDetail(f) {
   const fields=$('detailFields');fields.replaceChildren();
   const w=data.worlds.find(w=>w.id===f.location.worldId);
   const values=[['ユーザーID',f.id],['観測日時',date(f.observedAt)+(stale(f)?'（古い観測）':'')],['名前・状態文の取得',date(f.profileObservedAt)],['接続状態',presenceNames[f.presence]],['ステータス',statusNames[f.status]||f.status||'—'],['メッセージ',f.statusDescription||'—'],['プラットフォーム',f.platform||'—'],['ワールド',place(f)],['ワールドID',f.location.worldId||'—'],['インスタンスID',f.location.instanceId||'—'],['種類',accessNames[f.location.access]||f.location.access||'—'],['地域',f.location.region||'—'],['ワールド作者',w?.authorName||'未取得'],['ワールド定員',w?.capacity??'未取得'],['定員の取得日時',date(w?.observedAt)],['初回観測',date(f.firstObservedAt)],['現在の状態の初回観測',date(f.stateFirstObservedAt)]];
+  const duration = observedDurations(f);
+  if (duration) {
+    values.splice(4,0,['状態の観測上の継続',formatObservedDuration(duration.presence) + '（最終観測まで）']);
+    if(f.presence==='online' && f.location?.kind==='world')
+      values.splice(5,0,['同一ワールドの観測上の継続',formatObservedDuration(duration.place)]);
+  }
   for(const [k,v] of values)fields.append(node('dt',k),node('dd',v));
   const links=node('dd'),label=node('dt','公式サイト');
   const profile=node('a','プロフィールを開く ↗');profile.href='https://vrchat.com/home/user/'+encodeURIComponent(f.id);profile.target='_blank';profile.rel='noreferrer';links.append(profile);
@@ -230,8 +360,8 @@ async function load() {
     if(!selectedAccount || !accounts[selectedAccount])selectedAccount=state.accountId||Object.keys(accounts)[0]||'';
     $('account').replaceChildren(...Object.entries(accounts).map(([id,meta])=>new Option(meta.displayName||id,id)));
     if(!Object.keys(accounts).length)$('account').append(new Option('未取得',''));$('account').value=selectedAccount;
-    if(selectedAccount){const savedData=await exportAccount(selectedAccount);const events=savedData.events.sort((a,b)=>b.observedAt-a.observedAt);data={friends:savedData.friends,events:events.slice(0,200),journeyEvents:events,worlds:savedData.worlds,lastSuccessAt:accounts[selectedAccount]?.lastSuccessAt};}
-    else data={friends:[],events:[],worlds:[]};
+    if(selectedAccount){const savedData=await exportAccount(selectedAccount);const events=savedData.events.sort((a,b)=>b.observedAt-a.observedAt);data={friends:savedData.friends,events:events.slice(0,200),journeyEvents:events,worlds:savedData.worlds,runs:savedData.runs,lastSuccessAt:accounts[selectedAccount]?.lastSuccessAt};}
+    else data={friends:[],events:[],worlds:[],runs:[]};
   }
   await loadImages();
   if(!imageDirty)$('imageEnabled').checked=imageConfig.enabled===true;
@@ -256,8 +386,12 @@ async function exportData(kind){
     if(kind==='json'){download(prefix+'.json',JSON.stringify({appVersion:VERSION,...saved},null,2),'application/json');return;}
     if(kind==='friends'){
       const names=new Map(saved.worlds.map(w=>[w.id,w.name]));
-      const rows=[['account_id','user_id','display_name','is_friend','presence','status','status_description','platform','location_visibility','world_id','world_name','instance_id','instance_type','region','observed_at_utc','profile_observed_at_utc','first_observed_at_utc','state_first_observed_at_utc']];
+      const rows=[['account_id','user_id','display_name','is_friend','presence','status','status_description','platform','location_visibility','world_id','world_name','instance_id','instance_type','region','observed_at_utc','profile_observed_at_utc','first_observed_at_utc','state_first_observed_at_utc','presence_since_utc','world_since_utc','instance_since_utc','presence_observed_duration_ms','world_observed_duration_ms']];
       for(const f of saved.friends)rows.push([selectedAccount,f.id,f.displayName,f.isFriend,f.presence,f.status,f.statusDescription,f.platform,f.location.kind,f.location.worldId,names.get(f.location.worldId)||'',f.location.instanceId,f.location.access,f.location.region,iso(f.observedAt),iso(f.profileObservedAt),iso(f.firstObservedAt),iso(f.stateFirstObservedAt)]);
+      for (let i=0;i<saved.friends.length;i++) {
+        const d=observedDurations(saved.friends[i]);
+        rows[i+1].push(iso(d?.since),iso(d?.placeSince),iso(d?.instanceSince),d?.presence ?? '',d?.place ?? '');
+      }
       download(prefix+'.csv',csv(rows),'text/csv;charset=utf-8');
     }else{
       const rows=[['account_id','user_id','display_name','kind','observed_at_utc','previous_observed_at_utc','previous_presence','current_presence','previous_location_visibility','current_location_visibility','previous_world_id','current_world_id','previous_instance_id','current_instance_id','previous_status','current_status','previous_status_description','current_status_description']];
@@ -267,6 +401,13 @@ async function exportData(kind){
   }catch(e){toast('書き出しに失敗しました：'+e.message);}
 }
 document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab(b.dataset.tab);void syncView();}));
+document.querySelectorAll('[data-go-panel]').forEach(b=>b.addEventListener('click',()=>tab(b.dataset.goPanel)));
+for(const id of ['activityRange','activityFilter','activityWorld'])$(id).addEventListener('change',renderActivity);
+let activitySearchDebounce;
+$('activitySearch').addEventListener('input',()=>{
+  clearTimeout(activitySearchDebounce);
+  activitySearchDebounce=setTimeout(renderActivity,160);
+});
 $('emptySettings').addEventListener('click',()=>tab('settings'));
 $('friendSort').addEventListener('change',render);$('rankingSort').addEventListener('change',renderInsights);
 $('search').addEventListener('input',render);$('filter').addEventListener('change',render);

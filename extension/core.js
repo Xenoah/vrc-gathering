@@ -1,4 +1,36 @@
-export const VERSION = '0.3.2';
+// Continuity runs independently inside the service worker and the Node mock harness.
+export const ACTIVITY_NAMESPACE = 'vrc.activity';
+const validStart = (value, upper) => Number.isSafeInteger(value) && value > 0 && value <= upper;
+export function continuityMetadata(previous, current) {
+  const time = current.observedAt;
+  const meta = previous?.extensions?.[ACTIVITY_NAMESPACE];
+  // Legacy clients omit this namespace; mergeRecord preserves older extensions.
+  // Only reuse continuity recorded for the snapshot we actually received.
+  const old = meta?.observedAt === previous?.observedAt ? meta : {};
+  const sameFriend = !!previous && previous.isFriend === current.isFriend;
+  const samePresence = sameFriend && previous.presence === current.presence;
+  const a = previous?.location || {}, b = current.location || {};
+  const samePlace = samePresence && a.kind === b.kind && a.worldId === b.worldId;
+  const sameInstance = samePlace && a.instanceId === b.instanceId;
+  const prior = (key, same) => {
+    if (!same) return time;
+    // Legacy data has no independent continuity fields. StateFirstObservedAt
+    // is conservative: display name or status edits could have reset it.
+    const fallback = previous.stateFirstObservedAt || previous.observedAt;
+    const since = validStart(old[key], previous.observedAt) ? old[key] :
+      validStart(fallback, previous.observedAt) ? fallback : previous.observedAt;
+    return Math.min(time, since);
+  };
+  return {
+    observedAt: time,
+    presenceSince: prior('presenceSince', samePresence),
+    placeSince: prior('placeSince', samePlace),
+    instanceSince: prior('instanceSince', sameInstance)
+  };
+}
+
+
+export const VERSION = '0.4.0';
 export const DEFAULTS = Object.freeze({ enabled: false, contact: '', pollSeconds: 180, retentionDays: 30, offlineRefreshMinutes: 60 });
 export const USER_ID = /^(usr_[a-zA-Z0-9-]{8,64}|[a-zA-Z0-9]{8,32})$/;
 export const WORLD_ID = /^wrld_[a-zA-Z0-9-]{8,64}$/;
@@ -83,7 +115,11 @@ export function reconcile(previous, observations, accountId, completedAt, fullRo
     const p = old.get(f.id);
     const changed = !p || fingerprint(p) !== fingerprint(f);
     const entry = { ...f, accountId, firstObservedAt: p?.firstObservedAt || f.observedAt,
-      stateFirstObservedAt: changed ? f.observedAt : p.stateFirstObservedAt };
+      stateFirstObservedAt: changed ? f.observedAt : p.stateFirstObservedAt,
+      // Distinguish continued presence/world from profile or status-message edits.
+      // Namespaced extensions are preserved by the existing Sheets sync protocol.
+      extensions: { ...p?.extensions, ...f.extensions,
+        'vrc.activity': continuityMetadata(p, f) } };
     records.push(entry);
     if (changed) events.push({ accountId, userId: f.id, displayName: f.displayName,
       observedAt: f.observedAt, previousObservedAt: p?.observedAt || null,
