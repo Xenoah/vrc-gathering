@@ -58,7 +58,7 @@ do {
       }
       $temporary = $target + '.tmp'
       [IO.File]::WriteAllText($temporary, $text, $encoding)
-      if ([IO.File]::Exists($target)) { [IO.File]::Replace($temporary, $target, $null) } else { [IO.File]::Move($temporary, $target) }
+      if ([IO.File]::Exists($target)) { [IO.File]::Replace($temporary, $target, [NullString]::Value) } else { [IO.File]::Move($temporary, $target) }
       $seen[$file.FullName] = $stamp
     } catch { Write-Warning ($file.Name + ': ' + $_.Exception.Message) }
     finally { if ($reader) { $reader.Dispose() } elseif ($stream) { $stream.Dispose() } }
