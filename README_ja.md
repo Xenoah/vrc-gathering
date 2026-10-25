@@ -1,4 +1,4 @@
-# VRC Friends Observer v0.3.2
+# VRC Friends Observer v0.4.0
 
 自分のVRChatアカウントに公開されているフレンドの接続状態・ワールド・インスタンスを定期取得し、PC内へ記録するChrome拡張です。**ローカル利用時はコンパイル・Node.js・Python・外部サーバーは不要**です。Googleスプレッドシート同期を使う場合は、同梱手順でGASを公開します。
 
