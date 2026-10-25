@@ -29,7 +29,7 @@ export function createNetworkView({viewport,stage,canvas,zoomLabel,onSelect,imag
     ink.globalAlpha=1;
     for(const n of graph.nodes){const sx=n.x*scale+origin.x-viewport.scrollLeft,sy=n.y*scale+origin.y-viewport.scrollTop;if(sx<-180||sy<-130||sx>w+180||sy>h+130)continue;
       const r=radius(n),drawRadius=Math.max(r,2.3/scale);
-      ink.beginPath();ink.arc(n.x,n.y,drawRadius,0,Math.PI*2);ink.fillStyle=n.kind==='world'?'#153b48':n.kind==='offline'?'#292929':'#292d48';ink.fill();ink.strokeStyle=n.kind==='private'?'#ffa653':selected===n.id?'#fff0b3':n.kind==='world'?'#48c9dd':n.kind==='offline'?'#909090':'#a18aea';ink.lineWidth=Math.max(selected===n.id?4:2,1/scale);ink.stroke();
+      ink.beginPath();ink.arc(n.x,n.y,drawRadius,0,Math.PI*2);ink.fillStyle=n.kind==='world'?'#153b48':n.kind==='offline'?'#292929':'#292d48';ink.fill();ink.strokeStyle=n.kind==='private'?'#ffa653':selected===n.id?'#fff0b3':n.color||(n.kind==='world'?'#48c9dd':n.kind==='offline'?'#909090':'#a18aea');ink.lineWidth=Math.max(selected===n.id?4:2,1/scale);ink.stroke();
       const image=n.kind==='world'?imageFor?.('world',n.id):n.kind==='user'?imageFor?.('user',n.imageId||n.id):null;
       if(image?.complete&&image.naturalWidth&&r*scale>5){ink.save();ink.beginPath();ink.arc(n.x,n.y,r-4,0,Math.PI*2);ink.clip();ink.drawImage(image,n.x-r+4,n.y-r+4,(r-4)*2,(r-4)*2);ink.restore();}
       else if(scale>.2){ink.fillStyle='#b5e9f1';ink.font='600 22px sans-serif';ink.textAlign='center';ink.fillText([...n.name][0]||'?',n.x,n.y+8);}

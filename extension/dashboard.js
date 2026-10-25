@@ -9,6 +9,7 @@ import { IMAGE_ORIGINS } from './image-cache.js';
 import { initializeGasGuide } from './setup-guide.js';
 import { initializeSettingsBackup } from './settings-backup-ui.js';
 import { createConnectionsView } from './connections-ui.js';
+import { createResearchView } from './research-ui.js';
 import { createAnalysisLab } from './analysis-lab-ui.js';
 import { X_FOLLOWER_ORIGINS, followerRecords, bestFollowerMetric, followerText } from './x-followers.js';
 import { createXProfileView } from './x-profile-ui.js';
@@ -32,6 +33,7 @@ const imageURLs=new Map(),imageElements=new Map();let currentGraph;
 const network=createNetworkView({viewport:$('networkViewport'),stage:$('networkStage'),canvas:$('networkCanvas'),zoomLabel:$('networkZoom'),directional:true,wheelZoom:true,motionButton:$('networkMotion'),onSelect:showNetworkDetail,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const connections=createConnectionsView({node,date,avatar,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const analysisLab=createAnalysisLab({node,date,download,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
+const research=createResearchView({root:$('researchPanel'),isDemo,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const xProfileView=createXProfileView({node,date,request:message=>chrome.runtime.sendMessage(message),isOpen:()=>$('detail').open,getFollower:(accountId,url)=>xMetrics['xFollowers:'+accountId+':'+url.slice(14)],followersEnabled:()=>xFollowerConfig.enabled===true});
 function avatar(kind,id,name) {
   const url=imageURLs.get(kind+':'+id);
@@ -43,7 +45,7 @@ async function loadImages() {
   const revision=selectedAccount+':'+JSON.stringify(imageRevision);if(revision===loadedImageRevision)return;
   for(const url of imageURLs.values())URL.revokeObjectURL(url);imageURLs.clear();imageElements.clear();
   imageRows=isDemo||!selectedAccount?[]:await cachedImages(selectedAccount);loadedImageRevision=revision;
-  for(const row of imageRows){if(!row.blob)continue;const key=row.kind+':'+row.id,url=URL.createObjectURL(row.blob);imageURLs.set(key,url);const img=new Image();img.onload=()=>{network.redraw();connections.redraw();analysisLab.redraw();};img.src=url;imageElements.set(key,img);}
+  for(const row of imageRows){if(!row.blob)continue;const key=row.kind+':'+row.id,url=URL.createObjectURL(row.blob);imageURLs.set(key,url);const img=new Image();img.onload=()=>{network.redraw();connections.redraw();analysisLab.redraw();research.redraw();};img.src=url;imageElements.set(key,img);}
 }
 function statusBadge(friend) { const status=userStatus(friend),badge=node('span',status.label,'user-status status-'+status.key);badge.style.setProperty('--user-status-color',status.color);return badge; }
 $('statusLegend').replaceChildren(...Object.keys(USER_STATUSES).filter(key=>key!=='unknown').map(status=>statusBadge({status})));
@@ -64,10 +66,11 @@ function showSyncSkip(response) {
 function tab(name) {
   document.body.dataset.activeTab=name;
   for (const b of document.querySelectorAll('[data-tab]')) { b.classList.toggle('selected', b.dataset.tab === name); b.setAttribute('aria-current', b.dataset.tab === name ? 'page' : 'false'); }
-  for (const id of ['home','analytics','lab','connections','friends','ranking','journey','history','settings','help']) $(id + 'Panel').hidden = id !== name;
+  for (const id of ['home','analytics','lab','research','connections','friends','ranking','journey','history','settings','help']) $(id + 'Panel').hidden = id !== name;
   if (name === 'analytics' && loaded) renderActivity();
   if (name === 'connections' && loaded) connections.update(data,selectedAccount,config);
   if (name === 'lab' && loaded) analysisLab.update(data,selectedAccount,config);
+  research.update(data,selectedAccount,config);
   if (name === 'home' && loaded) renderHome();
   document.querySelector('[data-tab="'+name+'"]')?.scrollIntoView({block:'nearest',inline:'nearest'});
   window.scrollTo(0,0);
@@ -127,6 +130,7 @@ function render() {
   renderActivity();
   connections.update(data,selectedAccount,config);
   analysisLab.update(data,selectedAccount,config);
+  research.update(data,selectedAccount,config);
   renderCloud();
   const phases = { running:'取得中', ready:'収集中', paused:'停止中', waiting:'待機中', attention:'要確認' };
   $('phase').textContent = phases[state.phase] || '停止中'; $('phaseDot').className='status-dot ' + (state.phase || '');
@@ -387,7 +391,7 @@ async function load() {
     if(!selectedAccount || !accounts[selectedAccount])selectedAccount=state.accountId||Object.keys(accounts)[0]||'';
     $('account').replaceChildren(...Object.entries(accounts).map(([id,meta])=>new Option(meta.displayName||id,id)));
     if(!Object.keys(accounts).length)$('account').append(new Option('未取得',''));$('account').value=selectedAccount;
-    if(selectedAccount){const savedData=await exportAccount(selectedAccount);const events=savedData.events.sort((a,b)=>b.observedAt-a.observedAt);data={friends:savedData.friends,events:events.slice(0,200),journeyEvents:events,worlds:savedData.worlds,runs:savedData.runs,visits:savedData.visits,encounters:savedData.encounters,lastSuccessAt:accounts[selectedAccount]?.lastSuccessAt};}
+    if(selectedAccount){const savedData=await exportAccount(selectedAccount,{includeResearch:false});const events=savedData.events.sort((a,b)=>b.observedAt-a.observedAt);data={friends:savedData.friends,events:events.slice(0,200),journeyEvents:events,worlds:savedData.worlds,runs:savedData.runs,visits:savedData.visits,encounters:savedData.encounters,lastSuccessAt:accounts[selectedAccount]?.lastSuccessAt};}
     else data={friends:[],events:[],worlds:[],runs:[]};
   }
   await loadImages();

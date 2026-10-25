@@ -147,7 +147,7 @@ test('current version keeps v0.3.2 backups usable and migrates local storage',as
   assert.equal(validateSettingsBackup(previousBackup).appVersion,'0.3.2');
   const dbSource=fs.readFileSync(new URL('../extension/db.js',import.meta.url),'utf8');
   const syncSource=fs.readFileSync(new URL('../extension/sync-format.js',import.meta.url),'utf8');
-  assert.ok(dbSource.includes("indexedDB.open('vrc-friends-observer', 3)"));
+  assert.ok(dbSource.includes("indexedDB.open('vrc-friends-observer', 4)"));
   assert.match(syncSource,/export const RECORD_SCHEMA = 2;/);
   assert.match(syncSource,/export const SYNC_PROTOCOL = 2;/);
 });

@@ -16,20 +16,21 @@ function interactive(mark,label,readout,onSelect){
 }
 function legend(wrap,series){const list=el('div',null,'chart-legend');series.forEach((s,i)=>{const item=el('span'),dot=el('i');dot.style.background=colors[i%colors.length];item.append(dot,document.createTextNode(s.label));list.append(item);});wrap.append(list);}
 
-export function lineChart(holder,rows,{label,series,format=num,onSelect,pointClass=''}={}){
+export function lineChart(holder,rows,{label,series,format=num,onSelect,pointClass='',gaps=false,timeKey=''}={}){
   const wrap=frame(holder,label);if(!rows.length){empty(wrap);return;}
   legend(wrap,series);
   const plot=svg('svg',{viewBox:'0 0 640 224',class:'chart-plot','aria-label':label});wrap.append(plot);
   const readout=detail(wrap),max=Math.max(1,Math.ceil(Math.max(0,...rows.flatMap(r=>series.map(s=>r[s.key]||0)))/4))*4,left=58,right=622,top=18,bottom=184;
-  const x=i=>rows.length===1?(left+right)/2:left+i/(rows.length-1)*(right-left),y=v=>bottom-(v/max)*(bottom-top);
+  const firstTime=timeKey?Number(rows[0][timeKey]):0,lastTime=timeKey?Number(rows[rows.length-1][timeKey]):0;
+  const x=i=>rows.length===1?(left+right)/2:left+(timeKey&&lastTime>firstTime?(Number(rows[i][timeKey])-firstTime)/(lastTime-firstTime):i/(rows.length-1))*(right-left),y=v=>bottom-(v/max)*(bottom-top);
   for(let i=0;i<=4;i++){const value=max*i/4,yy=y(value);plot.append(svg('line',{x1:left,y1:yy,x2:right,y2:yy,class:'chart-grid'}),svg('text',{x:left-10,y:yy+4,'text-anchor':'end',class:'chart-tick'},format(value)));}
   const step=Math.max(1,Math.ceil(rows.length/7));
   rows.forEach((r,i)=>{if(i%step===0||i===rows.length-1)plot.append(svg('text',{x:x(i),y:210,'text-anchor':i===0?'start':i===rows.length-1?'end':'middle',class:'chart-tick'},String(r.label??r.day).slice(5)));});
   series.forEach((s,index)=>{
-    const points=rows.map((r,i)=>[x(i),y(r[s.key]||0)]),path=points.map(([xx,yy],i)=>(i?'L':'M')+xx+','+yy).join(' '),color=colors[index%colors.length];
-    if(index===0)plot.append(svg('path',{d:path+` L ${x(rows.length-1)},${bottom} L ${x(0)},${bottom} Z`,fill:color,opacity:'.09'}));
+    const points=rows.map((r,i)=>gaps&&r[s.key]==null?null:[x(i),y(r[s.key]||0)]),path=points.map((p,i)=>p?((i&&points[i-1]?'L':'M')+p[0]+','+p[1]):'').join(' '),color=colors[index%colors.length];
+    if(index===0&&!gaps)plot.append(svg('path',{d:path+` L ${x(rows.length-1)},${bottom} L ${x(0)},${bottom} Z`,fill:color,opacity:'.09'}));
     plot.append(svg('path',{d:path,fill:'none',stroke:color,'stroke-width':2.5,'stroke-linejoin':'round','stroke-linecap':'round'}));
-    points.forEach(([xx,yy],i)=>{const point=svg('circle',{cx:xx,cy:yy,r:rows.length>60?3:4,fill:color,class:'chart-point '+pointClass});interactive(point,`${rows[i].label??rows[i].day} · ${s.label} ${format(rows[i][s.key]||0)}`,readout,onSelect?()=>onSelect(rows[i]):null);plot.append(point);});
+    points.forEach((p,i)=>{if(!p)return;const [xx,yy]=p;const point=svg('circle',{cx:xx,cy:yy,r:rows.length>60?3:4,fill:color,class:'chart-point '+pointClass});interactive(point,`${rows[i].label??rows[i].day} · ${s.label} ${format(rows[i][s.key]||0)}`,readout,onSelect?()=>onSelect(rows[i]):null);plot.append(point);});
   });
 }
 

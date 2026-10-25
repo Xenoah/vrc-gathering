@@ -1,5 +1,5 @@
 import { DEFAULTS, VERSION, settings, validContact, userAgentRule, currentUser, friend, rosterObservations, reconcile, retryDelay, jitter, world, WORLD_ID, USER_ID } from './core.js';
-import { list, commit, prune, clearAll, exportSyncRecords, mergeSyncRecords, enqueueImages, cachedImages, updateCachedImage, trimImageCache, clearImageCache } from './db.js';
+import { list, commit, prune, clearAll, exportSyncRecords, mergeSyncRecords, enqueueImages, cachedImages, updateCachedImage, trimImageCache, clearImageCache, activeSeries, researchKind, exportAccount, mergeArchiveRecords } from './db.js';
 import { createImageCollector, imageCandidate, IMAGE_ORIGINS, IMAGE_CACHE_BYTES, IMAGE_CACHE_COUNT } from './image-cache.js';
 import { createSync, syncSettings, createAccountUpdater, CLOUD_ORIGINS, serverRetryDeadline } from './sync.js';
 import { resolveSettingsBackup } from './settings-backup.js';
@@ -7,8 +7,29 @@ import { reconcileConnections } from './connections.js';
 import { extractXProfiles, readXCache, writeXCache, X_CACHE_TTL } from './x-profile.js';
 import { normalizeRecord, mergeRecord } from './sync-format.js';
 import { X_FOLLOWER_ORIGINS, followerRecords, mergeFollowerCache } from './x-followers.js';
+import { collectionSeries, stopSeries, updateSeries, compressRun } from './observation-series.js';
+import { reportSummary, scheduledBoundary, DAY } from './research-model.js';
 
 const updateAccounts = createAccountUpdater(chrome.storage.local);
+let collectorPromise,activeReports;
+function collector(){return collectorPromise||=(async()=>{const saved=await chrome.storage.local.get('collectorId');if(saved.collectorId)return saved.collectorId;const id='col_'+crypto.randomUUID().replaceAll('-','');await chrome.storage.local.set({collectorId:id});return id;})();}
+async function recordStop(reason,accountId){if(!accountId)return;const config=await configuration(),collectorId=await collector(),previous=await activeSeries(accountId),at=previous.filter(r=>r.value.collectorId===collectorId).reduce((at,r)=>Math.max(at,r.value.lastSeenAt+1),Date.now());await mergeSyncRecords(stopSeries(previous,{accountId,collectorId,at,pollSeconds:config.pollSeconds,reason}));}
+async function makeReports({accountId='',viewId='',force=false}={}){
+  if(profileResetting)return {ok:false,error:'データを整理中です。'};
+  if(activeReports)return {ok:true,busy:true};
+  activeReports=(async()=>{
+    let saved=0;const views=await researchKind('views',accountId),prior=await researchKind('reports',accountId);
+    for(const {value:view} of views){if(view.deleted||viewId&&view.id!==viewId||!viewId&&view.schedule==='none')continue;
+      const until=force&&view.filters.rangeMode==='custom'?view.filters.until:force?Date.now():scheduledBoundary(Date.now(),view.schedule),since=force&&view.filters.rangeMode==='custom'?view.filters.since:until-view.filters.days*DAY,id='rpt_'+view.id+'_'+until;
+      if(!force&&prior.some(r=>r.value.id===id))continue;
+      const data=await exportAccount(view.accountId,{since}),cache=(await chrome.storage.local.get('xProfileCache')).xProfileCache||{};
+      data.profiles=Object.values(cache).map(p=>({...p,observedAt:p.checkedAt}));
+      const summary=reportSummary(data,{accountId:view.accountId,since,until,userId:view.filters.userId,worldId:view.filters.worldId});
+      await mergeSyncRecords([normalizeRecord('reports',{accountId:view.accountId,id,viewId:view.id,title:view.title,filters:view.filters,since,until,summary,observedAt:Date.now()})]);saved++;
+    }
+    await chrome.storage.local.set({researchState:{lastReportAt:Date.now(),reportsSaved:saved,error:''}});if(saved)void syncQuietly();return {ok:true,saved};
+  })().catch(async error=>{await chrome.storage.local.set({researchState:{error:error.message}});throw error;}).finally(()=>{activeReports=null;});return activeReports;
+}
 let profileWrites=Promise.resolve(),followerWrites=Promise.resolve(),followerGeneration=0;
 function mergeFollowers(records){
   const work=followerWrites.then(async()=>{
@@ -36,7 +57,7 @@ async function mergeCollected(records){
   const profiles=records.filter(r=>r.kind==='profiles');if(profiles.length)await mergeProfiles(profiles);
   const metrics=records.filter(r=>r.kind==='xFollowers');if(metrics.length)await mergeFollowers(metrics);
 }
-const cloud = createSync({ storage:chrome.storage.local, exportRecords:exportCollected, mergeRecords:mergeCollected, updateAccounts, hasPermission:()=>chrome.permissions.contains({origins:CLOUD_ORIGINS}) });
+const cloud = createSync({ storage:chrome.storage.local, exportRecords:exportCollected, mergeRecords:mergeCollected, mergeArchiveRecords, updateAccounts, hasPermission:()=>chrome.permissions.contains({origins:CLOUD_ORIGINS}) });
 const CLOUD_ALARM = 'vrc-observer-cloud';
 async function runCloud(options){const outcome=await cloud.sync(options);if(!outcome.skipped&&(await chrome.storage.local.get('cloudSync')).cloudSync?.enabled)await chrome.alarms.create(CLOUD_ALARM,{periodInMinutes:outcome.pending?1:5});return outcome;}
 const syncQuietly = () => runCloud().catch(() => {});
@@ -183,7 +204,9 @@ async function collect(signal) {
       changedCount: changes.events.length, worldNamesPending: Math.max(0, pendingWorlds.length - 5) };
     const [previousVisits,previousEncounters]=await Promise.all([list('visits',accountId),list('encounters',accountId)]);
     const connections=reconcileConnections(previousVisits,previousEncounters,[me.self,finalMe.self],allowed,accountId,{pollSeconds:config.pollSeconds,completedAt,roster});
-    await commit(changes.records, changes.events, worlds, run, connections);
+    const collectorId=await collector(),research=collectionSeries(await activeSeries(accountId),{accountId,collectorId,pollSeconds:config.pollSeconds,samples:[...changes.records,me.self,finalMe.self],completedAt,rosterSize:roster?.size||0,complete:onlinePage.complete&&!(meta.onlineOffset||0)});
+    const compactRun=compressRun(await list('runs',accountId),run,collectorId,config.pollSeconds);
+    await commit(changes.records, changes.events, worlds, compactRun, connections,research);
     if((await chrome.storage.local.get('imageCacheSettings')).imageCacheSettings?.enabled)await enqueueImages(accountId,images.filter(v=>v&&(v.kind==='world'||!roster||roster.has(v.id))),completedAt);
     nextMeta.lastSuccessAt = completedAt;
     await updateAccounts(accounts => ({...accounts, [accountId]:{...accounts[accountId], ...nextMeta}}));
@@ -199,6 +222,7 @@ async function collect(signal) {
     if (signal.aborted) return;
     const current = await state(), failures = (current.failures || 0) + 1;
     const status = Number(error.status) || 0;
+    await recordStop(status?'HTTP '+status:'取得・保存失敗',accountId||before.accountId).catch(()=>{});
     const stop = status === 401 || status === 403 || !validContact(config.contact);
     const cooldownUntil = stop ? current.cooldownUntil || 0 : Date.now() + retryDelay(error.retryAfter, Date.now(), failures) + Math.random() * 10000;
     if (stop) await chrome.storage.local.set({ settings: { ...await configuration(), enabled: false } });
@@ -227,6 +251,7 @@ async function pause() {
   await imageCollector.pause();
   if(activeProfile)await activeProfile.catch(()=>{});
   if (activeRun) await activeRun;
+  await recordStop('paused',(await state()).accountId).catch(()=>{});
   imageCollector.resume();
   await chrome.alarms.clear(ALARM);
   await patchState({ phase: 'paused', message: '収集を停止しています。', nextRunAt: null });
@@ -279,9 +304,18 @@ async function acceptFollowerObservation(message,sender){
   for(const entry of Object.values(cache)){const profile=readXCache(cache,entry?.accountId,entry?.userId);if(profile?.urls.includes(url))owners.add(profile.accountId);}
   if(!owners.size||profileResetting||generation!==followerGeneration)return {ok:false};
   const records=[...owners].map(accountId=>normalizeRecord('xFollowers',{accountId,url,followers:message.followers,approximate:message.approximate,source:'x-profile',observedAt:Date.now()}));
+  for(const record of records){const v=record.value;await mergeSyncRecords(updateSeries(await activeSeries(v.accountId),[{kind:'followerHistory',at:v.observedAt,url:v.url,followers:v.followers,approximate:v.approximate}],{accountId:v.accountId,collectorId:await collector(),pollSeconds:180}));}
   await mergeFollowers(records);void syncQuietly();return {ok:true};
 }
 async function command(message) {
+  if(message.type==='SAVE_RESEARCH'){
+    if(!['annotations','views'].includes(message.kind))throw Error('保存する形式が不正です。');
+    const accountId=message.value?.accountId;if(!(await chrome.storage.local.get('accountMeta')).accountMeta?.[accountId])throw Error('記録済みアカウントを選択してください。');
+    const record=normalizeRecord(message.kind,{...message.value,id:message.value.id||'item_'+crypto.randomUUID().replaceAll('-',''),observedAt:Date.now()});
+    await mergeSyncRecords([record]);void syncQuietly();return {ok:true,record};
+  }
+  if(message.type==='LOAD_ARCHIVE'){const result=await cloud.loadRange(message);if(result.skipped)throw Error('同期または設定変更中です。完了後に再試行してください。');return result;}
+  if(message.type==='RUN_REPORTS')return makeReports({accountId:message.accountId,viewId:message.viewId,force:true});
   if(message.type==='X_PROFILE')return lookupXProfile(message);
   if(message.type==='SAVE_X_FOLLOWERS'){
     const enabled=message.enabled===true;
@@ -379,6 +413,7 @@ async function command(message) {
       await pause();
       await cloud.pause();
       await followerWrites;
+      if(activeReports)await activeReports.catch(()=>{});
       const cloudSaved=await chrome.storage.local.get(['cloudSync','cloudState']),cloudConfig=cloudSaved.cloudSync || {},serverRetryAt=serverRetryDeadline(cloudSaved.cloudState);
       await chrome.storage.local.set({cloudSync:{...cloudConfig,enabled:false},cloudState:{phase:'disabled',serverRetryAt,retryAt:serverRetryAt,message:'ローカル記録の削除に伴い同期を停止しました。'},cloudDiagnostic:{},cloudCheckpoint:{cursor:0,receipts:{}}});
       await chrome.alarms.clear(CLOUD_ALARM);
@@ -412,6 +447,7 @@ chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === ALARM) void run();
   if (alarm.name === IMAGE_ALARM) void cacheImagesQuietly();
   if (alarm.name === CLOUD_ALARM) void syncQuietly();
+  if (alarm.name === 'vrc-observer-reports') void makeReports().catch(()=>{});
   if (alarm.name === MAINTENANCE) configuration().then(c => Promise.all([prune(c.retentionDays),trimImageCache(IMAGE_CACHE_BYTES,IMAGE_CACHE_COUNT,Date.now()-30*86400000)])).catch(() => {});
 });
 async function boot() {
@@ -419,6 +455,8 @@ async function boot() {
   const followerSettings=(await chrome.storage.local.get('xFollowerSettings')).xFollowerSettings;
   if(followerSettings?.enabled)await configureFollowerScript(await chrome.permissions.contains({origins:X_FOLLOWER_ORIGINS}));
   const config = await configuration();
+  await chrome.alarms.create('vrc-observer-reports',{periodInMinutes:60});
+  void makeReports().catch(()=>{});
   if ((await chrome.storage.local.get('cloudSync')).cloudSync?.enabled) {
     if (!await chrome.alarms.get(CLOUD_ALARM)) await chrome.alarms.create(CLOUD_ALARM,{periodInMinutes:5});
   }

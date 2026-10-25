@@ -77,7 +77,7 @@ try:
             migration.evaluate('''async()=>{
                 const {db,exportAccount,mergeSyncRecords,cachedImages}=await import('./../db.js');
                 const {normalizeRecord}=await import('./../sync-format.js');const d=(await import('./../demo.js')).demoData();
-                const opened=await db();if(opened.version!==3)throw Error('Version migration failed');
+                const opened=await db();if(opened.version!==4)throw Error('Version migration failed');
                 const before=await exportAccount(d.accountId);if(before.friends.length!==1||before.visits.length||before.encounters.length)throw Error('Existing records changed');
                 const images=await cachedImages(d.accountId);if(images.length!==1||await images[0].blob.text()!=='keep')throw Error('Image cache changed');
                 const records=[...d.visits.map(v=>normalizeRecord('visits',v)),...d.encounters.map(v=>normalizeRecord('encounters',v))];
@@ -86,6 +86,6 @@ try:
             }''')
             migration.close()
             assert not errors,errors
-            print('PASS: self visits, relationship graph/table/filter/detail, mobile, JSON, real v2→v3 migration preserving records and images, idempotent session import')
+            print('PASS: self visits, relationship graph/table/filter/detail, mobile, JSON, real v2→v4 migration preserving records and images, idempotent session import')
         finally:context.close()
 finally:server.shutdown();server.server_close()

@@ -1,6 +1,7 @@
 const paths={
   home:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
   analytics:'M3 4v16h18 M7 13h4 M11 8h5 M16 16h5',
+  research:'M3 20h18 M5 15l5-7 5 4 5-9 M5 15v5 M10 8v12 M15 12v8',
   lab:'M3 20h18 M6 16v-5 M12 16V4 M18 16V8',
   connections:'M9 8a3 3 0 1 0 6 0a3 3 0 1 0-6 0 M6 21v-2a6 6 0 0 1 12 0v2 M3 8v5 M1 10.5h4 M21 8v5 M19 10.5h4',
   journey:'M6 6l12 3 M6 6l4 13 M18 9l-8 10 M3 6a3 3 0 1 0 6 0a3 3 0 1 0-6 0 M15 9a3 3 0 1 0 6 0a3 3 0 1 0-6 0 M7 19a3 3 0 1 0 6 0a3 3 0 1 0-6 0',

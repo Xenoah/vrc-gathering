@@ -13,7 +13,7 @@ GASの `/exec` へPOSTし、`Content-Type: text/plain;charset=UTF-8` のJSONを�
 ```
 
 ```json
-{"protocol":2,"ok":true,"datasetId":"UUID","protocols":[1,2],"recordSchemas":[1,2],"operations":["upsert"],"kinds":["friends","events","worlds","runs","accounts","visits","encounters","profiles","xFollowers"],"maxBatch":100,"retentionDays":0,"serverTime":1792800000000}
+{"protocol":2,"ok":true,"datasetId":"UUID","protocols":[1,2],"recordSchemas":[1,2],"operations":["upsert"],"kinds":["friends","events","worlds","runs","accounts","visits","encounters","profiles","xFollowers","segments","crowd","coverage","followerHistory","annotations","views","reports"],"features":["changeIntervals","monthlyArchives","rangePull"],"maxBatch":100,"retentionDays":0,"serverTime":1792800000000}
 ```
 
 以後の要求には `protocol:2`、`token`、`datasetId` を必ず付けます。
@@ -89,7 +89,7 @@ GASの `/exec` へPOSTし、`Content-Type: text/plain;charset=UTF-8` のJSONを�
 
 共通列は `record_id`, `revision`, `record_kind`, `account_id`, `observed_at_ms`, `display_name`, `presence`, `world_id`, `instance_id`, `world_name`, `payload_json`, `schema_version`, `operation`, `entity_id`, `received_at_ms`, `extensions_json`。日時はUnixミリ秒です。受信時刻と観測時刻を分離しています。
 
-`payload_json` が復元元で、その他の業務列はシート上での閲覧・集計用です。数式になりうる文字列をエスケープします。手編集の同期は未対応です。`VRCSchema` の形式番号・データセットID・移行完了フラグ、行ID・更新番号・JSON列、`SEQ_<datasetId>` プロパティは編集しないでください。9種類の記録の合計上限は50,000件です。
+`payload_json` が復元元で、その他の業務列はシート上での閲覧・集計用です。数式になりうる文字列をエスケープします。手編集の同期は未対応です。`VRCSchema` の形式番号・データセットID・移行完了フラグ、行ID・更新番号・JSON列、`SEQ_<datasetId>` プロパティは編集しないでください。16種類の記録を保存します。主ファイルと各月別ファイルそれぞれ50,000件で区切ります。
 
 Cookie・認証トークン・連絡先・収集設定は同期データから分離します。画像と画像URLは端末内のキャッシュにのみ保存し、同期しません。
 
@@ -123,3 +123,42 @@ hello.retentionDaysは0（期限なし）または1〜365。pushは期間外の�
 `xFollowers:<accountId>:<handle>` のvalueは `accountId`, `observedAt`, `url`, `followers`, `approximate`, `source`。URLは正規化済みの `https://x.com/<handle>`、followersは0以上の安全な整数、approximateはboolean、sourceは現在 `x-profile` のみです。日時が新しい確認結果を優先し、日次の履歴整理からは除外します。
 
 リンクと数値は別レコードなので、数値の再確認がVRChat公開プロフィールの確認日時を延長することはありません。同じXリンクを持つ複数ユーザーは、所有アカウント内の同じ確認値を参照します。旧クライアントには対応する種類だけ返します。記録形式とHTTPプロトコルは2のままです。
+
+
+## v0.10.0の確認区間と圧縮
+
+プロトコル・レコードスキーマはv2を維持し、hello.kindsとfeaturesで追加機能を確認します。画像と画像URLは全種類で許可しません。
+
+| kind | 主な内容 | キー末尾（accountIdの後） |
+| --- | --- | --- |
+| segments | userId、state | collectorId:userId:startedAt |
+| crowd | worldId、count、instances、complete | collectorId:worldId:startedAt |
+| coverage | outcome、reason、observedUsers、rosterSize、online/web/offline/private/visible | collectorId:collection:startedAt |
+| followerHistory | url、followers、approximate、source | collectorId:handle:startedAt |
+| annotations | title、start/end、worldId、note、tags、deleted | id |
+| views | title、filters、schedule、deleted | id |
+| reports | title、viewId、since/until、filters、summary | id |
+
+最初の4種類はstartedAt、lastSeenAt、endedAt、pollSeconds、checks、sampleCount、endReasonを共有します。collectorIdは端末で生成し、設定バックアップには含めません。checksは前の確認からの正のミリ秒差をbase36で表し、ピリオドで連結します。startedAt自体が最初の確認です。空文字なら1回。最終復元時刻はlastSeenAtと一致し、最大1,024時刻・6,000文字です。sampleCountは検証時に再計算します。
+
+値が変わらない観測は同じIDへupsertし、lastSeenAt・observedAt・checksを更新します。状態変化、空白、停止で旧区間を閉じ、必要なら新しいIDで開始します。endedAtは区間を閉じた時刻、滞在の根拠はlastSeenAtまでです。endReasonはchanged/gap/stopped/continued。UTCの月境界・長さ上限はcontinuedとして分割し、失われた確認はありません。
+
+runsは既存のキー形式を保ち、extensionsのvrc.collector.idで発行端末を識別します。同じ巡回結果が続くとvrc.run-seriesにchecksとcountを保存します。checksは各巡回の開始／終了を交互に復元でき、最初の開始はstartedAt、最後の終了はcompletedAtです。v0.10.0の表示・分析・JSON出力はこれを元の巡回へ展開します。旧拡張はこの圧縮を展開できないため、巡回回数を正しく比較するには閲覧端末もv0.10.0以降に更新してください。
+
+worlds.traitsにはtags、platforms（standalonewindows/android/ios。画面ではWindows/Android/iOS）、releaseStatus、visits、favoritesを保持します。新しいスナップショットにtraitsがない場合は既存値を引き継ぎます。画像・パッケージのアセットURLは含みません。
+
+## 月別ファイルと期間取得
+
+VRCArchivesはmonth、spreadsheet_id、rows、max_revision、max_observed_atを持ちます。同月でも50,000行ごとに別ファイルへ分割します。イベント、巡回、訪問、同席、確認区間、フォロワー履歴、レポートが対象です。未終了区間、最新状態、プロフィール、イベントメモ、保存条件は主ファイルに残します。行のIDとrevisionは移動で変更しません。
+
+コピー・flush・索引保存の後で元の行を削除します。再実行はIDとrevisionで重複を確認し、索引保存前の中断も修復します。アーカイブ済みレコードのpush更新も同じ行に適用し、保守的な索引上限を先に保存してから更新します。通常pullは主ファイルと必要なアーカイブの更新番号・時刻列を読み、1ページ分のpayloadだけを読み込みます。pullのsinceは任意の下限で、端末の通常保存期間に使用します。
+
+featuresにrangePullがある場合、別カーソルで次の要求を送れます。
+
+```json
+{"protocol":2,"action":"range","datasetId":"UUID","token":"YOUR_SYNC_TOKEN","accountId":"usr_example0001","since":1790000000000,"until":1791000000000,"cursor":0,"limit":100,"kinds":["segments","crowd","coverage","followerHistory","events","runs","visits","encounters","worlds","annotations","views","reports"]}
+```
+
+区間はobservedAtがsince以降、startedAt（なければobservedAt）がuntilより前を候補にします。画面で確認区間を選択期間へ切り詰めます。最新プロフィール・保存条件・メモは時刻制限とは独立です。応答はrecords/cursor/hasMore/datasetId。フィルター前の更新番号でページを進めるため、recordsが空でもhasMoreなら継続してください。条件を変えたらcursor=0に戻します。通常同期のカーソルとは共有しません。
+
+端末はrange応答をarchiveCacheへ保存し、通常の送信対象には加えません。24時間後の整理対象です。GASのRETENTION_DAYSが0以外の場合は日次削除と受信下限が適用され、月別整理が保存期間を延長することはありません。

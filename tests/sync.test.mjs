@@ -296,3 +296,17 @@ test('all collected kinds sync with bounded receipts and remain pending on an ol
   a.advance(61000);await a.sync();assert.equal(a.store.cloudState.uploaded,0);
   const b=client(gas);await b.sync();assert.ok(b.rows.has(profile.key));
 });
+
+test('range retrieval pages archived history into a separate cache without moving regular sync checkpoints',async()=>{
+  const server=gasHarness();server.properties.RETENTION_DAYS='0';const hello=server.request({protocol:2,action:'hello'}),accountId='usr_rangeaccount01',start=Date.UTC(2026,8,1);
+  const records=Array.from({length:1001},(_,i)=>normalizeRecord('reports',{accountId,id:'report_range_'+i,title:'Historical',observedAt:start+i+100000,since:start-86400000,until:start,summary:{}}));
+  for(let i=0;i<records.length;i+=100)assert.equal(server.request({protocol:2,action:'push',datasetId:hello.datasetId,records:records.slice(i,i+100)}).accepted,Math.min(100,records.length-i));
+  server.context.pruneRecords();const cached=new Map(),c=client(server,[],null,{mergeArchiveRecords:async rows=>rows.forEach(r=>cached.set(r.key,r))});
+  const first=await c.loadRange({accountId,since:start-86400000,until:start+86400000});assert.equal(first.loaded,1000);assert.equal(first.hasMore,true);assert.equal(c.store.cloudCheckpoint,undefined);assert.equal(c.rows.size,0);
+  const rest=await c.loadRange({accountId,since:start-86400000,until:start+86400000,cursor:first.cursor});assert.equal(rest.loaded,1);assert.equal(rest.hasMore,false);assert.equal(cached.size,1001);
+  assert.ok(c.calls.every(c=>!JSON.parse(c.options.body).records));
+});
+test('range loading requires the new GAS capability and honors server retry deadlines',async()=>{
+  const server=gasHarness(),c=client(server),scope={accountId:'usr_rangeaccount01',since:Date.now()-86400000,until:Date.now()};c.store.cloudState={serverRetryAt:Date.now()+3600000};await assert.rejects(()=>c.loadRange(scope),/待機/);assert.equal(c.calls.length,0);
+  const older=client(server,[],async(url,options)=>{const result=server.request(JSON.parse(options.body));delete result.features;return {ok:true,json:async()=>result};});await assert.rejects(()=>older.loadRange(scope),/最新版/);
+});

@@ -30,7 +30,7 @@ export function continuityMetadata(previous, current) {
 }
 
 
-export const VERSION = '0.9.0';
+export const VERSION = '0.10.0';
 export const DEFAULTS = Object.freeze({ enabled: false, contact: '', pollSeconds: 180, retentionDays: 30, offlineRefreshMinutes: 60 });
 export const USER_ID = /^(usr_[a-zA-Z0-9-]{8,64}|[a-zA-Z0-9]{8,32})$/;
 export const WORLD_ID = /^wrld_[a-zA-Z0-9-]{8,64}$/;
@@ -154,5 +154,8 @@ export function csv(rows) {
 export function world(raw, accountId, observedAt) {
   if (!raw || !WORLD_ID.test(raw.id)) throw new Error('ワールド応答の形式が変わりました。');
   return { accountId, id: raw.id, name: text(raw.name, 256), authorName: text(raw.authorName, 128),
-    capacity: Number.isFinite(raw.capacity) ? raw.capacity : null, observedAt, retryAt: observedAt + 86400000 };
+    capacity: Number.isFinite(raw.capacity) ? raw.capacity : null, observedAt, retryAt: observedAt + 86400000,
+    traits:{tags:Array.isArray(raw.tags)?raw.tags.filter(v=>typeof v==='string').slice(0,50).map(v=>text(v,100)):[],
+      platforms:Array.isArray(raw.unityPackages)?[...new Set(raw.unityPackages.map(v=>v?.platform).filter(v=>['standalonewindows','android','ios'].includes(v)))]:[],
+      releaseStatus:text(raw.releaseStatus,40),visits:Number.isSafeInteger(raw.visits)&&raw.visits>=0?raw.visits:null,favorites:Number.isSafeInteger(raw.favorites)&&raw.favorites>=0?raw.favorites:null} };
 }

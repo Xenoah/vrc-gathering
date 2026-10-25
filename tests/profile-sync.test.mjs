@@ -9,7 +9,7 @@ test('profiles sync explicit X URLs while excluding image data and legacy reader
   assert.ok(!JSON.stringify(profile).includes('SECRET_'));
   for(const url of ['javascript:alert(1)','https://x.com/home','https://x.com/user/status/1','https://evil.test/user'])assert.throws(()=>normalizeRecord('profiles',{...profile.value,urls:[url]}));
   const hello=gas.request({protocol:2,action:'hello'});
-  assert.equal(hello.kinds.length,9);assert.ok(!hello.kinds.some(kind=>kind.startsWith('image')));
+  assert.equal(hello.kinds.length,16);assert.ok(!hello.kinds.some(kind=>kind.startsWith('image')));
   const push=gas.request({protocol:2,action:'push',datasetId:hello.datasetId,records:[profile]});assert.equal(push.accepted,1);
   assert.equal(gas.table('VRCProfiles').length,2);
   assert.equal(gas.request({action:'pull',cursor:0,limit:100}).records.length,0);

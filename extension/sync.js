@@ -94,7 +94,7 @@ export function createAccountUpdater(storage) {
   };
 }
 
-export function createSync({ storage, exportRecords, mergeRecords, updateAccounts = createAccountUpdater(storage), hasPermission = async()=>true, fetcher = (...args) => fetch(...args), now = () => Date.now() }) {
+export function createSync({ storage, exportRecords, mergeRecords, mergeArchiveRecords=async()=>{}, updateAccounts = createAccountUpdater(storage), hasPermission = async()=>true, fetcher = (...args) => fetch(...args), now = () => Date.now() }) {
   let active, activeKind, suspended = false;
   async function run(force) {
     const saved = await storage.get(['cloudSync', 'cloudState', 'cloudCheckpoint', 'accountMeta', 'settings']);
@@ -163,7 +163,7 @@ export function createSync({ storage, exportRecords, mergeRecords, updateAccount
       let more = true;
       const cutoff = now() - Math.max(1, Math.min(365, saved.settings?.retentionDays || 30)) * 86400000;
       for (let page = 0; more && page < 10 && now() < deadline; page++) {
-        const response = await request({ action:'pull', cursor:checkpoint.cursor || 0, limit:SYNC_BATCH_SIZE,...(protocol===2?{kinds:supportedKinds}:{}) });
+        const response = await request({ action:'pull', cursor:checkpoint.cursor || 0, limit:SYNC_BATCH_SIZE,...(protocol===2?{kinds:supportedKinds,since:cutoff}:{}) });
         if (!Array.isArray(response.records) || response.records.length > SYNC_BATCH_SIZE ||
             !Number.isSafeInteger(response.cursor) || response.cursor < checkpoint.cursor || typeof response.hasMore !== 'boolean' ||
             (response.hasMore && response.cursor <= checkpoint.cursor)) throw Error('同期サーバーのページ情報が不正です。');
@@ -228,6 +228,25 @@ export function createSync({ storage, exportRecords, mergeRecords, updateAccount
     await storage.set({cloudDiagnostic:info});
     return {connected:info.phase==='success',diagnostic:info};
   }
+  async function loadRange({accountId,since,until,cursor=0}){
+    if(typeof accountId!=='string'||!Number.isSafeInteger(since)||since<=0||!Number.isSafeInteger(until)||until<=since||until>now()+300000||!Number.isSafeInteger(cursor)||cursor<0)throw Error('読み込む期間が不正です。');
+    const saved=await storage.get(['cloudSync','cloudState']),config=syncSettings(saved.cloudSync);
+    if(!config.enabled||!config.endpoint||!config.token)throw Error('スプレッドシート同期を設定して有効にしてください。');
+    if(!await hasPermission())throw Error('Googleへの接続権限を許可してください。');
+    if(serverRetryDeadline(saved.cloudState)>now())throw Error('サーバー指定の待機中です。同期の再試行時刻までお待ちください。');
+    try{
+      const hello=await requestGas(config,{protocol:2,action:'hello'},{fetcher,now});validateHello(hello);
+      if(!hello.features?.includes('rangePull'))throw Error('Code.gs と Protocol.gs を最新版へ更新し、再デプロイしてください。');
+      const kinds=SYNC_KINDS.filter(k=>hello.kinds.includes(k));let loaded=0,hasMore=true;const deadline=now()+120000;
+      for(let page=0;hasMore&&page<10&&now()<deadline;page++){
+        const response=await requestGas(config,{protocol:2,action:'range',datasetId:hello.datasetId,accountId,since,until,cursor,limit:SYNC_BATCH_SIZE,kinds},{fetcher,now});
+        if(!Array.isArray(response.records)||response.records.length>SYNC_BATCH_SIZE||!Number.isSafeInteger(response.cursor)||response.cursor<cursor||typeof response.hasMore!=='boolean'||response.hasMore&&response.cursor<=cursor)throw Error('期間データのページ情報が不正です。');
+        const records=response.records.map(r=>normalizeEnvelope(r,now())).filter(r=>r.value.accountId===accountId);
+        await mergeArchiveRecords(records);loaded+=records.length;cursor=response.cursor;hasMore=response.hasMore;
+      }
+      return {ok:true,loaded,cursor,hasMore,retentionDays:hello.retentionDays};
+    }catch(error){if(error.retryMs){const state=(await storage.get('cloudState')).cloudState||{};await storage.set({cloudState:{...state,serverRetryAt:now()+error.retryMs}});}throw error;}
+  }
   function start(kind,run) {
     if(suspended)return Promise.resolve({skipped:true,reason:'paused'});
     if(active)return activeKind===kind?active:Promise.resolve({skipped:true,reason:'busy'});
@@ -235,6 +254,6 @@ export function createSync({ storage, exportRecords, mergeRecords, updateAccount
     active=run().finally(()=>{active=null;activeKind=null;});
     return active;
   }
-  return {sync:({force=false}={})=>start('sync',()=>run(force)),testConnection:()=>start('test',testConnection),
+  return {loadRange:options=>start('range:'+JSON.stringify(options),()=>loadRange(options)),sync:({force=false}={})=>start('sync',()=>run(force)),testConnection:()=>start('test',testConnection),
     async pause(){suspended=true;await active?.catch(()=>{});},resume(){suspended=false;}};
 }

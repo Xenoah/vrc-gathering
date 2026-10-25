@@ -1,8 +1,9 @@
-import { normalizeRecord, mergeRecord, canonical } from './sync-format.js';
+import { normalizeRecord, mergeRecord, canonical, RESEARCH_KINDS, ARCHIVE_KINDS } from './sync-format.js';
+import { expandRuns } from './observation-series.js';
 let opening;
 export function db() {
   if (!opening) opening = new Promise((resolve, reject) => {
-    const req = indexedDB.open('vrc-friends-observer', 3);
+    const req = indexedDB.open('vrc-friends-observer', 4);
     req.onupgradeneeded = event => {
       const d = req.result;
       if (event.oldVersion < 1) {
@@ -29,6 +30,12 @@ export function db() {
           store.createIndex('account','accountId');store.createIndex('observed','observedAt');
         }
       }
+      if(event.oldVersion<4){
+        for(const name of ['research','archiveCache']){
+          const store=d.createObjectStore(name,{keyPath:'key'});store.createIndex('account','value.accountId');store.createIndex('observed','value.observedAt');store.createIndex('accountTime',['value.accountId','value.observedAt']);
+          if(name==='research'){store.createIndex('active',['value.accountId','open']);store.createIndex('kind','kind');}else store.createIndex('cached','cachedAt');
+        }
+      }
     };
     req.onsuccess = () => { req.result.onversionchange = () => { req.result.close(); opening = null; }; resolve(req.result); };
     req.onerror = () => { opening = null; reject(req.error); };
@@ -39,7 +46,15 @@ const result = req => new Promise((resolve, reject) => { req.onsuccess = () => r
 const complete = tx => new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error || new Error('保存が中断されました。')); });
 export async function list(store, accountId) {
   const d = await db();
-  return result(d.transaction(store).objectStore(store).index('account').getAll(accountId));
+  const s=d.transaction(store).objectStore(store);
+  return result(s.index(s.indexNames.contains('account')?'account':'accountTime').getAll(s.indexNames.contains('account')?accountId:IDBKeyRange.bound([accountId,0],[accountId,Number.MAX_SAFE_INTEGER])));
+}
+export async function activeSeries(accountId){const d=await db();return result(d.transaction('research').objectStore('research').index('active').getAll([accountId,1]));}
+export async function researchKind(kind,accountId){const d=await db(),rows=await result(d.transaction('research').objectStore('research').index('kind').getAll(kind));return accountId?rows.filter(r=>r.value.accountId===accountId):rows;}
+export async function readResearch(accountId,since=0){
+  const d=await db(),tx=d.transaction(['research','archiveCache']),range=IDBKeyRange.bound([accountId,since],[accountId,Number.MAX_SAFE_INTEGER]);
+  const batches=await Promise.all(['research','archiveCache'].map(name=>result(tx.objectStore(name).index('accountTime').getAll(range)))),records=new Map();
+  for(const r of batches.flat())if(RESEARCH_KINDS.includes(r.kind))records.set(r.key,mergeRecord(r,records.get(r.key)));return [...records.values()];
 }
 export async function timeline(store, accountId, { before = Number.MAX_SAFE_INTEGER, limit = 200 } = {}) {
   const d = await db();
@@ -51,28 +66,33 @@ export async function timeline(store, accountId, { before = Number.MAX_SAFE_INTE
     req.onsuccess = () => { const c = req.result; if (!c || items.length >= limit) return resolve(items); items.push(c.value); c.continue(); };
   });
 }
-export async function commit(records, events, worlds, run, connections = {visits:[],encounters:[]}) {
+export async function commit(records, events, worlds, run, connections = {visits:[],encounters:[]},research=[]) {
   const rows = [...records.map(v => normalizeRecord('friends', v)), ...events.map(v => normalizeRecord('events', v)),
     ...worlds.map(v => normalizeRecord('worlds', v)), ...(run ? [normalizeRecord('runs', run)] : []),
-    ...connections.visits.map(v=>normalizeRecord('visits',v)),...connections.encounters.map(v=>normalizeRecord('encounters',v))];
+    ...connections.visits.map(v=>normalizeRecord('visits',v)),...connections.encounters.map(v=>normalizeRecord('encounters',v)),...research];
   await mergeSyncRecords(rows);
 }
 export async function exportSyncRecords() {
   const d = await db(), names = ['friends', 'events', 'worlds', 'runs', 'visits', 'encounters'];
   const tx = d.transaction(names);
   const values = await Promise.all(names.map(name => result(tx.objectStore(name).getAll())));
-  return values.flatMap((rows, i) => rows.map(value => normalizeRecord(names[i], value)));
+  const research=await result(d.transaction('research').objectStore('research').getAll());
+  return [...values.flatMap((rows, i) => rows.map(value => normalizeRecord(names[i], value))),...research.map(r=>normalizeRecord(r.kind,r.value))];
 }
 export async function mergeSyncRecords(records) {
   // One transaction merges a downloaded batch. Replayed batches cannot duplicate history.
   const names = ['friends', 'events', 'worlds', 'runs', 'visits', 'encounters'];
-  const d = await db(), tx = d.transaction(names, 'readwrite'), done = complete(tx);
+  const d = await db(), tx = d.transaction([...names,'research'], 'readwrite'), done = complete(tx);
   try {
     const values = await Promise.all(names.map(name => result(tx.objectStore(name).getAll())));
     const maps = new Map(names.map((name, i) => [name, new Map(values[i].map(value => {
       const record = normalizeRecord(name, value); return [record.key, {record, localKey: value.key}];
     }))]));
     for (let record of records) {
+      if(RESEARCH_KINDS.includes(record.kind)){
+        const store=tx.objectStore('research'),old=await result(store.get(record.key)),merged=mergeRecord(record,old);
+        if(!old||canonical(old.value)!==canonical(merged.value))store.put({...normalizeRecord(merged.kind,merged.value),open:merged.value.endedAt===null?1:0});continue;
+      }
       if (!maps.has(record.kind)) continue;
       const map = maps.get(record.kind), old = map.get(record.key);
       record = mergeRecord(record, old?.record);
@@ -95,27 +115,38 @@ export async function mergeSyncRecords(records) {
   }
 }
 export async function prune(retentionDays, now = Date.now()) {
-  const d = await db(), tx = d.transaction(['events', 'runs', 'friends', 'worlds', 'visits', 'encounters'], 'readwrite');
+  const d = await db(), tx = d.transaction(['events', 'runs', 'friends', 'worlds', 'visits', 'encounters','research','archiveCache'], 'readwrite');
   const done = complete(tx), cutoff = now - retentionDays * 86400000;
-  for (const name of ['events', 'runs', 'friends', 'worlds', 'visits', 'encounters']) {
+  for (const name of ['events', 'runs', 'friends', 'worlds', 'visits', 'encounters','research']) {
     const req = tx.objectStore(name).index('observed').openCursor(IDBKeyRange.upperBound(cutoff, true));
-    req.onsuccess = () => { const cursor = req.result; if (cursor) { cursor.delete(); cursor.continue(); } };
+    req.onsuccess = () => { const cursor = req.result; if (cursor) { if(name!=='research'||!ARCHIVE_KINDS.includes(cursor.value.kind))cursor.delete(); cursor.continue(); } };
   }
+  const old=tx.objectStore('archiveCache').index('cached').openCursor(IDBKeyRange.upperBound(now-86400000,true));old.onsuccess=()=>{const c=old.result;if(c){c.delete();c.continue();}};
   await done;
 }
 export async function clearAll() {
-  const d = await db(), tx = d.transaction(['friends', 'events', 'worlds', 'runs', 'imageCache', 'visits', 'encounters'], 'readwrite');
+  const d = await db(), tx = d.transaction(['friends', 'events', 'worlds', 'runs', 'imageCache', 'visits', 'encounters','research','archiveCache'], 'readwrite');
   const done = complete(tx);
-  for (const name of ['friends', 'events', 'worlds', 'runs', 'imageCache', 'visits', 'encounters']) tx.objectStore(name).clear();
+  for (const name of ['friends', 'events', 'worlds', 'runs', 'imageCache', 'visits', 'encounters','research','archiveCache']) tx.objectStore(name).clear();
   await done;
 }
-export async function exportAccount(accountId) {
+export async function exportAccount(accountId,{includeResearch=true,since=0}={}) {
   const d = await db(), tx = d.transaction(['friends', 'events', 'worlds', 'runs', 'visits', 'encounters']);
   const range = IDBKeyRange.bound([accountId, 0], [accountId, Number.MAX_SAFE_INTEGER]);
   const requests = ['friends', 'events', 'worlds', 'runs'].map(name => result(tx.objectStore(name).index(name === 'friends' || name === 'worlds' ? 'account' : 'accountTime').getAll(name === 'friends' || name === 'worlds' ? accountId : range)));
   for(const name of ['visits','encounters'])requests.push(result(tx.objectStore(name).index('account').getAll(accountId)));
   const [friends, events, worlds, runs, visits, encounters] = await Promise.all(requests);
-  return { schema: 1, exportedAt: new Date().toISOString(), accountId, friends, events, worlds, runs, visits, encounters };
+  const records=new Map();
+  for(const [kind,values] of Object.entries({friends,events,worlds,runs,visits,encounters}))for(const v of values){const r=normalizeRecord(kind,v);records.set(r.key,r);}
+  for(const r of await list('archiveCache',accountId))if(!RESEARCH_KINDS.includes(r.kind))records.set(r.key,mergeRecord(r,records.get(r.key)));
+  if(includeResearch)for(const r of await readResearch(accountId,since))records.set(r.key,r);
+  const out={schema:1,exportedAt:new Date().toISOString(),accountId};
+  for(const kind of ['friends','events','worlds','runs','visits','encounters',...RESEARCH_KINDS])out[kind]=[...records.values()].filter(r=>r.kind===kind).map(r=>r.value);
+  out.runs=expandRuns(out.runs);return out;
+}
+export async function mergeArchiveRecords(records){
+  const d=await db(),tx=d.transaction('archiveCache','readwrite'),done=complete(tx),store=tx.objectStore('archiveCache');
+  for(const r of records){const old=await result(store.get(r.key)),merged=mergeRecord(r,old);store.put({...normalizeRecord(merged.kind,merged.value),cachedAt:Date.now()});}await done;
 }
 
 // Images and source URLs stay in this store; export/sync only use the observation stores above.

@@ -26,7 +26,7 @@ def main():
     for name in ['Code.gs', 'Protocol.gs', 'appsscript.json']:
         if (ROOT / 'extension/setup' / name).read_bytes() != (ROOT / 'gas' / name).read_bytes():
             raise SystemExit('Bundled GAS code is stale. Run python scripts/sync_gas_protocol.py.')
-    paths = [ROOT / name for name in ['README.md', 'README_ja.md', 'VALIDATION.md', 'RELEASE_NOTES.md', 'package.json', 'package-lock.json']]
+    paths = [ROOT / name for name in ['README.md', 'README_ja.md', 'RESEARCH.md', 'VALIDATION.md', 'RELEASE_NOTES.md', 'package.json', 'package-lock.json']]
     for directory in ['extension', 'windows', 'tests', 'scripts', 'gas', 'design']:
         paths.extend(p for p in (ROOT / directory).rglob('*') if p.is_file() and '__pycache__' not in p.parts)
     payloads = {}

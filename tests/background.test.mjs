@@ -11,7 +11,7 @@ const online={id:fid,displayName:'架空フレンド',status:'active',location:w
 
 async function harness(handler, allowCloud = true){
   let now=Date.UTC(2026,9,24),closed=false;
-  const events={},store={},alarms=new Map(),saved={friends:[],events:[],worlds:[],runs:[],images:[],visits:[],encounters:[]},calls=[];
+  const events={},store={},alarms=new Map(),saved={friends:[],events:[],worlds:[],runs:[],images:[],visits:[],encounters:[],research:[]},calls=[];
   const hook=name=>({addListener:fn=>{events[name]=fn;}});
   const storage={
     get:async key=>{const keys=Array.isArray(key)?key:[key];return structuredClone(Object.fromEntries(keys.filter(k=>k in store).map(k=>[k,store[k]])));},
@@ -27,9 +27,10 @@ async function harness(handler, allowCloud = true){
     setTimeout:(fn,ms)=>{now+=ms;queueMicrotask(fn);return 1;},clearTimeout:()=>{},
     fetch:async(url,options)=>{if(closed)throw Error('closed');now+=50;calls.push({url,options,at:now});
       const response=await handler(new URL(url),calls.length,options);return {ok:(response.status||200)<300,status:response.status||200,type:response.type||'basic',headers:new Headers({'Content-Type':'application/json',...(response.headers||{})}),json:async()=>structuredClone(response.body)};}});
-  const dbExports={list:async(name,id)=>structuredClone(saved[name].filter(v=>v.accountId===id)),
-    commit:async(f,e,w,r,connections={visits:[],encounters:[]})=>{for(const v of f){saved.friends=saved.friends.filter(x=>!(x.accountId===v.accountId&&x.id===v.id));saved.friends.push(structuredClone(v));}saved.events.push(...structuredClone(e));saved.worlds.push(...structuredClone(w));if(r)saved.runs.push(structuredClone(r));for(const kind of ['visits','encounters'])for(const v of connections[kind]){saved[kind]=saved[kind].filter(x=>!(x.accountId===v.accountId&&x.startedAt===v.startedAt&&x.userId===v.userId));saved[kind].push(structuredClone(v));}},
-    exportSyncRecords:async()=>[],mergeSyncRecords:async()=>{},enqueueImages:async(accountId,images)=>{saved.images.push(...images.filter(Boolean).map(v=>({...v,accountId})));},cachedImages:async()=>[],updateCachedImage:async()=>{},trimImageCache:async()=>{},clearImageCache:async()=>{saved.images=[];},prune:async()=>{},clearAll:async()=>{for(const k of ['friends','events','worlds','runs','visits','encounters'])saved[k]=[];}};
+  const saveResearch=records=>{for(const r of records){saved.research=saved.research.filter(v=>v.key!==r.key);saved.research.push(structuredClone(r));}};
+  const dbExports={activeSeries:async id=>structuredClone(saved.research.filter(r=>r.value.accountId===id&&r.value.endedAt===null)),researchKind:async(kind,id)=>structuredClone(saved.research.filter(r=>r.kind===kind&&(!id||r.value.accountId===id))),exportAccount:async accountId=>Object.fromEntries(['segments','crowd','coverage','followerHistory','worlds'].map(kind=>[kind,saved.research.filter(r=>r.kind===kind&&r.value.accountId===accountId).map(r=>r.value)])),mergeArchiveRecords:async()=>{},list:async(name,id)=>structuredClone(saved[name].filter(v=>v.accountId===id)),
+    commit:async(f,e,w,r,connections={visits:[],encounters:[]},research=[])=>{saveResearch(research);for(const v of f){saved.friends=saved.friends.filter(x=>!(x.accountId===v.accountId&&x.id===v.id));saved.friends.push(structuredClone(v));}saved.events.push(...structuredClone(e));saved.worlds.push(...structuredClone(w));if(r){saved.runs=saved.runs.filter(v=>v.accountId!==r.accountId||v.startedAt!==r.startedAt);saved.runs.push(structuredClone(r));}for(const kind of ['visits','encounters'])for(const v of connections[kind]){saved[kind]=saved[kind].filter(x=>!(x.accountId===v.accountId&&x.startedAt===v.startedAt&&x.userId===v.userId));saved[kind].push(structuredClone(v));}},
+    exportSyncRecords:async()=>[],mergeSyncRecords:async records=>saveResearch(records),enqueueImages:async(accountId,images)=>{saved.images.push(...images.filter(Boolean).map(v=>({...v,accountId})));},cachedImages:async()=>[],updateCachedImage:async()=>{},trimImageCache:async()=>{},clearImageCache:async()=>{saved.images=[];},prune:async()=>{},clearAll:async()=>{for(const k of ['friends','events','worlds','runs','visits','encounters','research'])saved[k]=[];}};
   const db=new vm.SyntheticModule(Object.keys(dbExports),function(){for(const[k,v]of Object.entries(dbExports))this.setExport(k,v);},{context});
   const core=new vm.SourceTextModule(await fs.readFile(new URL('core.js',root),'utf8'),{context});await core.link(()=>{});
   const format=new vm.SourceTextModule(await fs.readFile(new URL('sync-format.js',root),'utf8'),{context});await format.link(()=>{});
@@ -39,8 +40,10 @@ async function harness(handler, allowCloud = true){
   const connections=new vm.SourceTextModule(await fs.readFile(new URL('connections.js',root),'utf8'),{context});await connections.link(()=>{});
   const xProfiles=new vm.SourceTextModule(await fs.readFile(new URL('x-profile.js',root),'utf8'),{context});await xProfiles.link(()=>{});
   const followers=new vm.SourceTextModule(await fs.readFile(new URL('x-followers.js',root),'utf8'),{context});await followers.link(spec=>spec==='./sync-format.js'?format:xProfiles);
+  const series=new vm.SourceTextModule(await fs.readFile(new URL('observation-series.js',root),'utf8'),{context});await series.link(()=>format);
+  const research=new vm.SourceTextModule(await fs.readFile(new URL('research-model.js',root),'utf8'),{context});await research.link(spec=>spec==='./sync-format.js'?format:series);
   const bg=new vm.SourceTextModule(await fs.readFile(new URL('background.js',root),'utf8'),{context});
-  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:spec==='./x-followers.js'?followers:db);await bg.evaluate();
+  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:spec==='./x-followers.js'?followers:spec==='./observation-series.js'?series:spec==='./research-model.js'?research:db);await bg.evaluate();
   async function flush(){for(let i=0;i<15;i++)await new Promise(setImmediate);}
   await flush();
   const command=message=>new Promise(resolve=>events.message(message,{id:'testextension',url:'chrome-extension://testextension/dashboard.html'},resolve));
@@ -94,7 +97,7 @@ test('cloud configuration requires optional Google permissions and cannot alter 
   assert.equal(response.ok,false);assert.match(response.error,/権限/);assert.equal(h.store.cloudSync,undefined);assert.equal(h.calls.length,0);h.stop();
 });
 test('cloud setup schedules sync, uses no VRChat cookies, and clearing local records disables sync',async()=>{
-  const h=await harness((url,n,options)=>({body:JSON.parse(options.body).action==='hello'?{protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles','xFollowers'],retentionDays:0,maxBatch:100}:{protocol:2,ok:true,datasetId:'test',records:[],cursor:0,hasMore:false}}));
+  const h=await harness((url,n,options)=>({body:JSON.parse(options.body).action==='hello'?{protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles','xFollowers','segments','crowd','coverage','followerHistory','annotations','views','reports'],retentionDays:0,maxBatch:100}:{protocol:2,ok:true,datasetId:'test',records:[],cursor:0,hasMore:false}}));
   const response=await h.command({type:'SAVE_SYNC',settings:{enabled:true,endpoint:'https://script.google.com/macros/s/test/exec',token:'test_token_0123456789_abcdefghijklmnopqrstuvwxyz'}});
   assert.equal(response.ok,true);await h.flush();assert.equal(h.store.cloudState.phase,'ready');
   assert.equal(h.calls.length,2);assert.equal(h.calls[0].options.credentials,'omit');assert.equal(h.calls[0].options.method,'POST');
@@ -115,7 +118,7 @@ test('image collection is opt-in and candidates are queued only after the accoun
 });
 
 test('connection test command uses saved settings and performs one hello without enabling sync',async()=>{
-  const hello={protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles','xFollowers'],retentionDays:0,maxBatch:100};
+  const hello={protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles','xFollowers','segments','crowd','coverage','followerHistory','annotations','views','reports'],retentionDays:0,maxBatch:100};
   const h=await harness(()=>({body:hello}));
   await h.command({type:'SAVE_SYNC',settings:{enabled:false,endpoint:'https://script.google.com/macros/s/test/exec',token:'test_token_0123456789_abcdefghijklmnopqrstuvwxyz'}});
   assert.equal(h.calls.length,0);const response=await h.command({type:'TEST_SYNC'});assert.equal(response.connected,true);assert.equal(h.calls.length,1);
@@ -276,4 +279,15 @@ test('the worker sends follower metrics to GAS and restores them without collect
   assert.equal((await h.command({type:'SYNC',force:true})).ok,true);assert.equal(gas.table('VRCXFollowers').length,2);
   h.store.xFollowerCache={};h.store.cloudCheckpoint={cursor:0,receipts:{}};h.advance(61000);
   assert.equal((await h.command({type:'SYNC',force:true})).ok,true);assert.equal(h.store.xFollowerCache['xFollowers:'+uid+':example'].followers,25000);h.stop();
+});
+
+test('collection stores compact series, pause boundaries and scheduled reports without duplicate periods',async()=>{
+  const h=await harness(good);try{
+    await h.start();assert.ok(h.saved.research.some(r=>r.kind==='segments'&&r.value.userId===uid));assert.ok(h.saved.research.some(r=>r.kind==='crowd'));assert.ok(h.saved.research.some(r=>r.kind==='coverage'));
+    const count=h.saved.research.filter(r=>r.kind==='segments').length;h.advance(180000);assert.equal((await h.command({type:'POLL'})).ok,true);await h.flush();assert.ok(h.saved.research.filter(r=>r.kind==='segments').length<=count+2);
+    const accountId=uid;const view=await h.command({type:'SAVE_RESEARCH',kind:'views',value:{accountId,title:'Daily',filters:{days:7,tool:'pairs'},schedule:'daily'}});assert.equal(view.ok,true);
+    await h.events.alarm({name:'vrc-observer-reports'});await h.flush();const reports=h.saved.research.filter(r=>r.kind==='reports');assert.equal(reports.length,1);await h.events.alarm({name:'vrc-observer-reports'});await h.flush();assert.equal(h.saved.research.filter(r=>r.kind==='reports').length,1);
+    assert.equal((await h.command({type:'RUN_REPORTS',accountId,viewId:view.record.value.id})).ok,true);assert.equal(h.saved.research.filter(r=>r.kind==='reports').length,2);assert.ok(h.saved.research.filter(r=>r.kind==='reports').some(r=>r.value.summary.quality.samples>=1));
+    await h.command({type:'PAUSE'});assert.ok(h.saved.research.some(r=>r.kind==='coverage'&&r.value.outcome==='paused'));
+  }finally{h.stop();}
 });

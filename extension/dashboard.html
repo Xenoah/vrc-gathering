@@ -1,9 +1,9 @@
 <!doctype html>
 <html lang="ja">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VRC Friends Observer</title><link rel="stylesheet" href="dashboard.css"><link rel="stylesheet" href="intelligence.css"><link rel="stylesheet" href="analysis-lab.css"><link rel="stylesheet" href="workspace.css"><link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VRC Friends Observer</title><link rel="stylesheet" href="dashboard.css"><link rel="stylesheet" href="intelligence.css"><link rel="stylesheet" href="analysis-lab.css"><link rel="stylesheet" href="workspace.css"><link rel="stylesheet" href="research.css"><link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png"></head>
 <body data-active-tab="home">
 <a class="skip-link" href="#mainContent">メインコンテンツへ</a>
-<header class="top"><div class="brand"><img class="brand-icon" src="icons/icon-128.png" width="48" height="48" alt=""><div><strong>VRC Friends Observer</strong><small>LOCAL FRIEND ACTIVITY · v0.9.0</small></div></div><div class="workspace-name">ACTIVITY WORKSPACE <span>JST</span></div><div class="top-actions"><button id="start" class="primary">収集を開始</button><button id="refresh">今すぐ更新</button><span id="demoFlag" class="pill" hidden>デモデータ</span><a href="https://vrchat.com/home" target="_blank" rel="noreferrer">VRChatを開く ↗</a></div></header>
+<header class="top"><div class="brand"><img class="brand-icon" src="icons/icon-128.png" width="48" height="48" alt=""><div><strong>VRC Friends Observer</strong><small>LOCAL FRIEND ACTIVITY · v0.10.0</small></div></div><div class="workspace-name">ACTIVITY WORKSPACE <span>JST</span></div><div class="top-actions"><button id="start" class="primary">収集を開始</button><button id="refresh">今すぐ更新</button><span id="demoFlag" class="pill" hidden>デモデータ</span><a href="https://vrchat.com/home" target="_blank" rel="noreferrer">VRChatを開く ↗</a></div></header>
 <main id="mainContent" tabindex="-1">
 <div class="workspace-status">
 <div class="statusbar" role="status" aria-live="polite"><span id="phaseDot" class="status-dot"></span><strong id="phase">停止中</strong><span id="message">設定を保存し、収集を開始してください。</span><span id="nextRun" class="push"></span></div>
@@ -14,6 +14,7 @@
 <nav class="tabs" aria-label="表示切替"><div class="nav-caption">WORKSPACE</div>
   <button data-tab="home" class="selected" aria-current="page">概要</button>
   <button data-tab="analytics">分析・タイムライン</button>
+  <button data-tab="research">時系列・比較</button>
   <button data-tab="lab">分析ラボ</button>
   <button data-tab="connections">自分・つながり</button>
   <button data-tab="journey">探索・遷移図</button>
@@ -97,6 +98,7 @@
   </div>
 </section>
 
+<section id="researchPanel" class="panel research-panel" hidden></section>
 <section id="connectionsPanel" class="panel intelligence-panel" hidden>
   <div class="intelligence-heading"><div><span class="eyebrow">MY WORLDS &amp; CONNECTIONS</span><h2>自分の訪問とユーザーとのつながり</h2><p>自分の現在地とフレンドの公開された場所を照合し、一緒にいた可能性がある区間を記録します。</p></div></div>
   <p id="selfStatus" class="intelligence-summary"></p>
@@ -204,7 +206,7 @@
           <li><h4>ウェブアプリとしてデプロイ</h4><p>「デプロイ → 新しいデプロイ → ウェブアプリ」で、「次のユーザーとして実行」は <strong>自分</strong>、「アクセスできるユーザー」は <strong>全員</strong> を選びます。「自分のみ」のままだと拡張からの要求はログイン画面へ転送され、doPostは実行されません。GAS側で同期キーを照合するため、スプレッドシート自体の公開は不要です。</p><p>デプロイ後、末尾が <code>/exec</code> のURLをコピーします。<code>/dev</code> は使いません。組織の設定で「全員」を選べない場合は、管理者が認める公開方法を確認してください。</p></li>
           <li><h4>この拡張にURLと同期キーを登録</h4><p>同期設定にGASのURLと <code>SYNC_TOKEN</code> と同じキーを入力し、「記録をGoogleスプレッドシートと同期する」をオンにして保存します。Googleへの追加接続権限を許可します。「接続状態・診断」で両ドメインが許可済みであることを確認し、「接続テスト」→「今すぐ同期」を実行します。GASの「実行数」にウェブアプリの <code>doPost</code> が記録され、シートに行が追加されることを確認してください。</p><p>別端末でも同じURLとキーを登録できます。閲覧だけならVRChatへのログインや収集開始は不要です。</p><button type="button" id="backToSyncSettings" class="primary">同期設定へ戻る</button></li>
         </ol>
-        <div class="info"><strong>既存のGASから更新する場合</strong><p>Code.gsとProtocol.gsの両方を置き換え、同じスプレッドシートID・同期キーで <code>setup</code> を実行してから「デプロイを管理 → 編集 → 新バージョン」で公開します。<code>VRCProfiles</code>・<code>VRCXFollowers</code> を含む9種類の記録シートを作成します。<strong>全期間を残すにはスクリプトプロパティのRETENTION_DAYSを0に変更</strong>してください。v0.2.xの旧 <code>VRCRecords</code> は種類別シートへ自動移行し、端末の既存記録も引き継ぎます。旧シートはバックアップとして残り、自動整理の対象外です。移行と同期を確認後、不要なら旧シートを手動で削除してください。</p><p><code>VRCSchema</code> と更新番号・JSON列は編集しないでください。新しい拡張は旧GASでも従来の記録を同期できます。未対応の訪問・同席・Xリンク・Xフォロワー数は「一部未同期」と表示し、GAS更新後に送受信します。画像と画像URLは端末内のキャッシュにのみ保存し、同期しません。収集設定・認証情報・同期キーは収集記録に含めません。</p></div><details class="setup-troubleshooting"><summary>うまく同期できないとき・GASを更新するとき</summary>
+        <div class="info"><strong>既存のGASから更新する場合</strong><p>Code.gsとProtocol.gsの両方を置き換え、同じスプレッドシートID・同期キーで <code>setup</code> を実行してから「デプロイを管理 → 編集 → 新バージョン」で公開します。<code>VRCProfiles</code>・<code>VRCXFollowers</code> を含む16種類の記録シートを作成します。<strong>全期間を残すにはスクリプトプロパティのRETENTION_DAYSを0に変更</strong>してください。v0.2.xの旧 <code>VRCRecords</code> は種類別シートへ自動移行し、端末の既存記録も引き継ぎます。旧シートはバックアップとして残り、自動整理の対象外です。移行と同期を確認後、不要なら旧シートを手動で削除してください。</p><p><code>VRCArchives</code> に記載した月別ファイルへ過去の履歴を整理します。「時系列・比較」で期間を指定して読み戻せます。<code>VRCSchema</code>・<code>VRCArchives</code> と更新番号・JSON列は編集しないでください。新しい拡張は旧GASでも従来の記録を同期できます。未対応の訪問・同席・時系列・レポートなどは「一部未同期」と表示し、GAS更新後に送受信します。画像と画像URLは端末内のキャッシュにのみ保存し、同期しません。収集設定・認証情報・同期キーは収集記録に含めません。</p></div><details class="setup-troubleshooting"><summary>うまく同期できないとき・GASを更新するとき</summary>
           <dl><dt>Error: CONFIG／setupが失敗します</dt><dd>最新の2ファイルを貼り付け、エディターから <code>setup</code> を実行すると、不正なプロパティ名と条件を日本語で表示します。SYNC_TOKENが未設定・短い場合は <code>createSyncToken</code> を実行し、生成された値を拡張にも保存してください。</dd><dt>GASの実行数にdoPostがありません</dt><dd>「接続状態・診断」で権限、最終試行、待機期限を確認します。URL・キーを保存して「接続テスト」を実行してください。PUBLIC_ACCESSなら公開範囲を「全員」にして新バージョンで再デプロイします。NETWORKなら接続権限・ネット接続・URLを確認してください。ブラウザでURLを開くだけではdoGetになり、doPostの確認にはなりません。</dd><dt>ParseErrorでコードを保存できません</dt><dd>最新版のCode.gsとProtocol.gsをコピーし直してください。v0.3.0の論理代入演算子を削除し、GAS用の構文検査を追加しています。</dd><dt>同期キーが一致しません</dt><dd>GASの <code>SYNC_TOKEN</code> と、拡張に入力したキーを確認します。保存済みのキーは、入力欄を空欄のまま保存すると維持されます。</dd><dt>GASがJSONを返しません</dt><dd>URLが <code>/exec</code> であることと、公開範囲が「全員」であることを確認します。URLをブラウザで開いたときの <code>POST_REQUIRED</code> は正常です。</dd><dt>コードを更新したのに反映されません</dt><dd>Apps Scriptの「デプロイを管理 → 編集 → 新バージョン」で既存のデプロイを更新します。コードの保存だけでは公開済みの内容は更新されません。</dd><dt>GASの実行設定を確認したい</dt><dd>V8ランタイムを使います。必要なら「appsscript.json マニフェスト ファイルをエディタで表示する」を有効にし、<a href="setup/appsscript.json" download="appsscript.json">同梱のappsscript.jsonを保存</a>して参考にしてください。</dd></dl>
           <p>端末内の記録を削除してもシートの記録は残り、同期を再開すると戻ります。クラウドと端末の保存日数は別設定です。</p>
         </details>
