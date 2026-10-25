@@ -10,6 +10,7 @@ import { initializeGasGuide } from './setup-guide.js';
 import { initializeSettingsBackup } from './settings-backup-ui.js';
 import { createConnectionsView } from './connections-ui.js';
 import { createAnalysisLab } from './analysis-lab-ui.js';
+import { createXProfileView } from './x-profile-ui.js';
 
 const $ = id => document.getElementById(id), isDemo = new URLSearchParams(location.search).get('demo') === '1';
 const dateFormat = new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
@@ -25,6 +26,7 @@ const imageURLs=new Map(),imageElements=new Map();let currentGraph;
 const network=createNetworkView({viewport:$('networkViewport'),stage:$('networkStage'),canvas:$('networkCanvas'),zoomLabel:$('networkZoom'),onSelect:showNetworkDetail,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const connections=createConnectionsView({node,date,avatar,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const analysisLab=createAnalysisLab({node,date,download,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
+const xProfileView=createXProfileView({node,date,request:message=>chrome.runtime.sendMessage(message),isOpen:()=>$('detail').open});
 function avatar(kind,id,name) {
   const url=imageURLs.get(kind+':'+id);
   if(!url)return node('span',[...name||'?'][0],'avatar');
@@ -355,7 +357,9 @@ function showDetail(f) {
   const links=node('dd'),label=node('dt','公式サイト');
   const profile=node('a','プロフィールを開く ↗');profile.href='https://vrchat.com/home/user/'+encodeURIComponent(f.id);profile.target='_blank';profile.rel='noreferrer';links.append(profile);
   if(f.location.worldId){const link=node('a','　ワールドを開く ↗');link.href='https://vrchat.com/home/world/'+encodeURIComponent(f.location.worldId);link.target='_blank';link.rel='noreferrer';links.append(link);}
-  fields.append(label,links);renderHistory($('detailHistory'),data.events.filter(e=>e.userId===f.id));$('detail').showModal();
+  const socials=node('dd');socials.id='detailXProfiles';fields.prepend(node('dt','X（Twitter）'),socials);fields.append(label,links);
+  renderHistory($('detailHistory'),data.events.filter(e=>e.userId===f.id));$('detail').showModal();
+  xProfileView.show(socials,selectedAccount,f.id,{demo:isDemo});
 }
 let refreshQueue=Promise.resolve();
 function reload() { refreshQueue=refreshQueue.then(load).catch(e=>toast('表示データを読み取れません：'+e.message));return refreshQueue; }
@@ -428,6 +432,7 @@ $('settingsForm').addEventListener('submit',async e=>{e.preventDefault();const v
   if(await send({type:'SAVE',settings:values})){dirty=false;$('settingsNotice').textContent='保存しました';await reload();}});
 $('clear').addEventListener('click',async()=>{if(confirm('この端末の全アカウントの記録を削除し、収集・同期を停止します。スプレッドシートの記録は残り、同期を再開すると再取得されます。実行しますか？')&&await send({type:'CLEAR'})){selectedAccount='';await reload();toast('全記録を削除しました。');}});
 $('closeDetail').addEventListener('click',()=>$('detail').close());
+$('detail').addEventListener('close',()=>xProfileView.cancel());
 $('exportCSV').addEventListener('click',()=>exportData('friends'));$('exportJSON').addEventListener('click',()=>exportData('json'));$('exportEvents').addEventListener('click',()=>exportData('events'));
 if(!isDemo){let timer;chrome.storage.onChanged.addListener(()=>{clearTimeout(timer);timer=setTimeout(()=>void reload(),200);});}
 setInterval(()=>{if(loaded)render();},30000);

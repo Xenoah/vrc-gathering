@@ -2,7 +2,7 @@
 <html lang="ja">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VRC Friends Observer</title><link rel="stylesheet" href="dashboard.css"><link rel="stylesheet" href="intelligence.css"><link rel="stylesheet" href="analysis-lab.css"><link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png"></head>
 <body>
-<header class="top"><div class="brand"><img class="brand-icon" src="icons/icon-128.png" width="48" height="48" alt=""><div><strong>VRC Friends Observer</strong><small>LOCAL FRIEND ACTIVITY · v0.6.0</small></div></div><div class="top-actions"><span id="demoFlag" class="pill" hidden>デモデータ</span><a href="https://vrchat.com/home" target="_blank" rel="noreferrer">VRChatを開く ↗</a></div></header>
+<header class="top"><div class="brand"><img class="brand-icon" src="icons/icon-128.png" width="48" height="48" alt=""><div><strong>VRC Friends Observer</strong><small>LOCAL FRIEND ACTIVITY · v0.6.1</small></div></div><div class="top-actions"><span id="demoFlag" class="pill" hidden>デモデータ</span><a href="https://vrchat.com/home" target="_blank" rel="noreferrer">VRChatを開く ↗</a></div></header>
 <main>
 <section class="hero"><div><div class="eyebrow">VRC GATHERING INTELLIGENCE</div><h1>観測から、活動の輪郭へ。</h1><p>最新状況、ユーザー別の時間軸、ワールド遷移をひとつの画面から探索。</p></div><div class="hero-actions"><button id="start" class="primary">収集を開始</button><button id="refresh">今すぐ更新</button></div></section>
 <div class="statusbar" role="status" aria-live="polite"><span id="phaseDot" class="status-dot"></span><strong id="phase">停止中</strong><span id="message">設定を保存し、収集を開始してください。</span><span id="nextRun" class="push"></span></div>
@@ -197,7 +197,8 @@
     </details>
   </section>
   <div class="info"><strong>保存される情報</strong><p>フレンドID、表示名、接続状態、ステータス・メッセージ、プラットフォーム、公開されたワールドID・名前・インスタンスID・種類・地域、観測日時と変更履歴。自分の訪問履歴と、フレンドとの同インスタンス／同ワールドの観測区間も保存します。ワールドの作者名・定員もキャッシュします。</p><p>PC内の拡張専用データベースに保存。同期を有効にした場合は指定のGoogleスプレッドシートにも保存します。VRChatの認証情報は同期しません。インスタンスIDに作成者ID等が含まれる場合があります。</p></div>
-  <div class="danger-row"><div><strong>記録をすべて削除</strong><p>この端末の全アカウントの記録を削除し、収集・同期を停止します。スプレッドシートの記録は残ります。同期を再開すると再取得されます。</p></div><button id="clear" class="danger">この端末の記録を削除</button></div>
+  <p class="muted">ユーザー詳細を開くと、必要に応じて公開プロフィールのX（Twitter）リンクを確認します。XのURL・確認日時・対象IDだけを端末にキャッシュします（最大500人・再確認間隔24時間）。本文は保存せず、このキャッシュはGAS同期やバックアップに含めません。</p>
+  <div class="danger-row"><div><strong>記録をすべて削除</strong><p>この端末の全アカウントの記録とXリンクのキャッシュを削除し、収集・同期を停止します。スプレッドシートの記録は残ります。同期を再開すると再取得されます。</p></div><button id="clear" class="danger">この端末の記録を削除</button></div>
 </section>
 <section id="helpPanel" class="panel padded" hidden>
   <div class="section-heading"><span class="eyebrow">QUICK START</span><h2>Windowsで継続して使う</h2></div>

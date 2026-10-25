@@ -24,7 +24,7 @@ async function harness(handler, allowCloud = true){
   const context=vm.createContext({chrome,console,navigator:{userAgent:'TestChrome'},Date:Clock,Math,URL,AbortController,AbortSignal,DOMException,
     setTimeout:(fn,ms)=>{now+=ms;queueMicrotask(fn);return 1;},clearTimeout:()=>{},
     fetch:async(url,options)=>{if(closed)throw Error('closed');now+=50;calls.push({url,options,at:now});
-      const response=handler(new URL(url),calls.length,options);return {ok:(response.status||200)<300,status:response.status||200,type:response.type||'basic',headers:new Headers({'Content-Type':'application/json',...(response.headers||{})}),json:async()=>structuredClone(response.body)};}});
+      const response=await handler(new URL(url),calls.length,options);return {ok:(response.status||200)<300,status:response.status||200,type:response.type||'basic',headers:new Headers({'Content-Type':'application/json',...(response.headers||{})}),json:async()=>structuredClone(response.body)};}});
   const dbExports={list:async(name,id)=>structuredClone(saved[name].filter(v=>v.accountId===id)),
     commit:async(f,e,w,r,connections={visits:[],encounters:[]})=>{for(const v of f){saved.friends=saved.friends.filter(x=>!(x.accountId===v.accountId&&x.id===v.id));saved.friends.push(structuredClone(v));}saved.events.push(...structuredClone(e));saved.worlds.push(...structuredClone(w));if(r)saved.runs.push(structuredClone(r));for(const kind of ['visits','encounters'])for(const v of connections[kind]){saved[kind]=saved[kind].filter(x=>!(x.accountId===v.accountId&&x.startedAt===v.startedAt&&x.userId===v.userId));saved[kind].push(structuredClone(v));}},
     exportSyncRecords:async()=>[],mergeSyncRecords:async()=>{},enqueueImages:async(accountId,images)=>{saved.images.push(...images.filter(Boolean).map(v=>({...v,accountId})));},cachedImages:async()=>[],updateCachedImage:async()=>{},trimImageCache:async()=>{},clearImageCache:async()=>{saved.images=[];},prune:async()=>{},clearAll:async()=>{for(const k of ['friends','events','worlds','runs','visits','encounters'])saved[k]=[];}};
@@ -35,8 +35,9 @@ async function harness(handler, allowCloud = true){
   const images=new vm.SourceTextModule(await fs.readFile(new URL('image-cache.js',root),'utf8'),{context});await images.link(()=>{});
   const backup=new vm.SourceTextModule(await fs.readFile(new URL('settings-backup.js',root),'utf8'),{context});await backup.link(spec=>spec==='./core.js'?core:sync);
   const connections=new vm.SourceTextModule(await fs.readFile(new URL('connections.js',root),'utf8'),{context});await connections.link(()=>{});
+  const xProfiles=new vm.SourceTextModule(await fs.readFile(new URL('x-profile.js',root),'utf8'),{context});await xProfiles.link(()=>{});
   const bg=new vm.SourceTextModule(await fs.readFile(new URL('background.js',root),'utf8'),{context});
-  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:db);await bg.evaluate();
+  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:db);await bg.evaluate();
   async function flush(){for(let i=0;i<15;i++)await new Promise(setImmediate);}
   await flush();
   const command=message=>new Promise(resolve=>events.message(message,{id:'testextension',url:'chrome-extension://testextension/dashboard.html'},resolve));
@@ -176,4 +177,59 @@ test('account changes discard own visits and all co-presence evidence as well as
   let count=0;
   const h=await harness(url=>url.pathname.endsWith('/auth/user')?{body:{...owner,id:++count===1?uid:'usr_switchedaccount01',state:'online',location:wid+':123~region(jp)'}}:good(url));
   await h.start();assert.equal(h.saved.visits.length,0);assert.equal(h.saved.encounters.length,0);assert.equal(h.saved.friends.length,0);h.stop();
+});
+
+test('X profile lookup caches only explicit links without refreshing presence or collection state',async()=>{
+  let links=['https://twitter.com/VRChat?source=vrc'];
+  const h=await harness(url=>url.pathname.includes('/profile/')?{body:{id:fid,bioLinks:links,bio:'SECRET_BIO',email:'SECRET_EMAIL'}}:good(url));
+  await h.start();await h.command({type:'PAUSE'});const before=JSON.stringify(h.saved),phase=h.store.state.phase;
+  const result=await h.command({type:'X_PROFILE',accountId:uid,userId:fid});
+  assert.equal(result.ok,true);assert.deepEqual([...result.profile.urls],['https://x.com/vrchat']);
+  assert.equal(JSON.stringify(h.saved),before);assert.equal(h.store.state.phase,phase);assert.equal(h.store.settings.enabled,false);assert.ok(!h.alarms.has('vrc-observer-next'));
+  assert.ok(!JSON.stringify(h.store.xProfileCache).includes('SECRET'));
+  const count=h.calls.length;await h.command({type:'X_PROFILE',accountId:uid,userId:fid});await h.command({type:'X_PROFILE',accountId:uid,userId:fid,force:true});assert.equal(h.calls.length,count);
+  h.advance(61000);links=[];const removed=await h.command({type:'X_PROFILE',accountId:uid,userId:fid,force:true});assert.deepEqual([...removed.profile.urls],[]);
+  for(let i=1;i<h.calls.length;i++)assert.ok(h.calls[i].at-h.calls[i-1].at>=2200);
+  assert.ok(h.calls.every(c=>c.options.method==='GET'));
+  await h.command({type:'CLEAR'});assert.deepEqual(h.store.xProfileCache,{});h.stop();
+});
+test('X lookup rejects unknown IDs, a different login account, and a mismatched profile',async()=>{
+  let changed=false,wrongProfile=false,missingFields=false;
+  const h=await harness(url=>url.pathname.endsWith('/auth/user')&&changed?{body:{...owner,id:fid}}:url.pathname.includes('/profile/')?{body:{id:wrongProfile?uid:fid,...(!missingFields?{bioLinks:[]}:{})}}:good(url));
+  await h.start();let count=h.calls.length;
+  assert.equal((await h.command({type:'X_PROFILE',accountId:uid,userId:'../../auth/user'})).ok,false);
+  assert.equal((await h.command({type:'X_PROFILE',accountId:uid,userId:'usr_unknown0001'})).ok,false);assert.equal(h.calls.length,count);
+  changed=true;assert.equal((await h.command({type:'X_PROFILE',accountId:uid,userId:fid})).ok,false);assert.ok(!h.calls.slice(count).some(c=>c.url.includes('/profile/')));
+  changed=false;wrongProfile=true;assert.equal((await h.command({type:'X_PROFILE',accountId:uid,userId:fid})).ok,false);
+  wrongProfile=false;missingFields=true;assert.equal((await h.command({type:'X_PROFILE',accountId:uid,userId:fid})).ok,false);assert.equal(h.store.xProfileCache,undefined);h.stop();
+});
+test('X lookup discards an account switch after fetching and honors Retry-After',async()=>{
+  let mode='',identities=0,limitStatus=429;
+  const h=await harness(url=>{
+    if(mode==='switch'&&url.pathname.endsWith('/auth/user'))return{body:++identities===1?owner:{...owner,id:fid}};
+    if(url.pathname.includes('/profile/'))return mode==='limit'?{status:limitStatus,headers:{'Retry-After':'86400'}}:{body:{id:fid,bioLinks:['https://x.com/example']}};
+    return good(url);
+  });
+  await h.start();mode='switch';assert.equal((await h.command({type:'X_PROFILE',accountId:uid,userId:fid})).ok,false);assert.equal(h.store.xProfileCache,undefined);
+  mode='limit';for(const status of [429,503]){limitStatus=status;h.store.state.cooldownUntil=0;
+    assert.equal((await h.command({type:'X_PROFILE',accountId:uid,userId:fid})).ok,false);assert.ok(h.store.state.cooldownUntil);
+    const count=h.calls.length;assert.equal((await h.command({type:'X_PROFILE',accountId:uid,userId:fid})).ok,false);assert.equal(h.calls.length,count);
+  }h.stop();
+});
+test('clearing data aborts an in-flight profile and prevents cache resurrection',async()=>{
+  let release,entered;const gate=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});
+  const h=await harness(async url=>{if(url.pathname.includes('/profile/')){entered();await gate;return{body:{id:fid,bioLinks:['https://x.com/example']}};}return good(url);});
+  await h.start();const fetching=h.command({type:'X_PROFILE',accountId:uid,userId:fid});await started;
+  const clearing=h.command({type:'CLEAR'});await h.flush();
+  assert.equal((await h.command({type:'X_PROFILE',accountId:uid,userId:fid})).ok,false);
+  release();assert.equal((await fetching).ok,false);assert.equal((await clearing).ok,true);
+  assert.deepEqual(h.store.xProfileCache,{});assert.equal(h.saved.friends.length,0);h.stop();
+});
+test('scheduled collection waits for the profile lookup and uses the same rate-limit clock',async()=>{
+  let release,entered;const gate=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});
+  const h=await harness(async url=>{if(url.pathname.includes('/profile/')){entered();await gate;return{body:{id:fid,bioLinks:[]}};}return good(url);});
+  await h.start();h.advance(61000);const fetching=h.command({type:'X_PROFILE',accountId:uid,userId:fid});await started;
+  const count=h.calls.length;h.events.alarm({name:'vrc-observer-next'});await h.flush();assert.equal(h.calls.length,count);
+  release();assert.equal((await fetching).ok,true);await h.flush();assert.ok(h.saved.runs.length>=2);
+  for(let i=1;i<h.calls.length;i++)assert.ok(h.calls[i].at-h.calls[i-1].at>=2200);h.stop();
 });

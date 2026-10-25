@@ -1,9 +1,10 @@
-import { DEFAULTS, VERSION, settings, validContact, userAgentRule, currentUser, friend, rosterObservations, reconcile, retryDelay, jitter, world, WORLD_ID } from './core.js';
+import { DEFAULTS, VERSION, settings, validContact, userAgentRule, currentUser, friend, rosterObservations, reconcile, retryDelay, jitter, world, WORLD_ID, USER_ID } from './core.js';
 import { list, commit, prune, clearAll, exportSyncRecords, mergeSyncRecords, enqueueImages, cachedImages, updateCachedImage, trimImageCache, clearImageCache } from './db.js';
 import { createImageCollector, imageCandidate, IMAGE_ORIGINS, IMAGE_CACHE_BYTES, IMAGE_CACHE_COUNT } from './image-cache.js';
 import { createSync, syncSettings, createAccountUpdater, CLOUD_ORIGINS, serverRetryDeadline } from './sync.js';
 import { resolveSettingsBackup } from './settings-backup.js';
 import { reconcileConnections } from './connections.js';
+import { extractXProfiles, readXCache, writeXCache, X_CACHE_TTL } from './x-profile.js';
 
 const updateAccounts = createAccountUpdater(chrome.storage.local);
 const cloud = createSync({ storage:chrome.storage.local, exportRecords:exportSyncRecords, mergeRecords:mergeSyncRecords, updateAccounts, hasPermission:()=>chrome.permissions.contains({origins:CLOUD_ORIGINS}) });
@@ -12,10 +13,10 @@ const syncQuietly = () => cloud.sync().catch(() => {});
 
 const ALARM = 'vrc-observer-next', MAINTENANCE = 'vrc-observer-prune';
 const API = 'https://vrchat.com/api/1';
-let activeRun = null, controller = null;
+let activeRun = null, controller = null, activeProfile = null, profileController = null, profileResetting = false;
 const IMAGE_ALARM='vrc-observer-images';
 const imageCollector=createImageCollector({store:{list:async()=>{const accountId=(await state()).accountId;return accountId?cachedImages(accountId):[];},update:updateCachedImage,trim:trimImageCache},
-  canRun:async()=>!activeRun && !((await state()).cooldownUntil>Date.now()) && (await configuration()).enabled && (await chrome.storage.local.get('imageCacheSettings')).imageCacheSettings?.enabled===true,
+  canRun:async()=>!activeRun && !activeProfile && !((await state()).cooldownUntil>Date.now()) && (await configuration()).enabled && (await chrome.storage.local.get('imageCacheSettings')).imageCacheSettings?.enabled===true,
   fetcher:async(url,options)=>{
     const s=await state();if(s.cooldownUntil>Date.now())throw Error('API cooldown');
     const delay=Math.max(0,(s.lastRequestAt||0)+2200-Date.now());if(delay)await sleep(delay,options.signal);
@@ -25,7 +26,7 @@ const imageCollector=createImageCollector({store:{list:async()=>{const accountId
     return response;
   }});
 async function cacheImagesQuietly(){
-  try{if(activeRun || !(await configuration()).enabled || !(await chrome.storage.local.get('imageCacheSettings')).imageCacheSettings?.enabled || !await chrome.permissions.contains({origins:IMAGE_ORIGINS}))return;
+  try{if(activeRun || activeProfile || !(await configuration()).enabled || !(await chrome.storage.local.get('imageCacheSettings')).imageCacheSettings?.enabled || !await chrome.permissions.contains({origins:IMAGE_ORIGINS}))return;
     const result=await imageCollector.collect();if(!result.skipped)await chrome.storage.local.set({imageCacheState:result});
   }catch{}
 }
@@ -50,17 +51,17 @@ async function ensureUA(config) {
   if(await chrome.permissions.contains({origins:['https://api.vrchat.cloud/*']}))rules.push({...rule,id:2,condition:{...rule.condition,urlFilter:'|https://api.vrchat.cloud/api/1/'}});
   await chrome.declarativeNetRequest.updateDynamicRules({removeRuleIds:[1,2],addRules:rules});
 }
-async function request(path, signal, progress) {
-  if (!(path === '/auth/user' || /^\/auth\/user\/friends\?n=100&offset=\d+&offline=(true|false)$/.test(path) || /^\/worlds\/wrld_[a-zA-Z0-9-]{8,64}$/.test(path))) throw new ApiError('許可されていないAPIパスです。');
+async function request(path, signal, progress, {quiet=false}={}) {
+  if (!(path === '/auth/user' || /^\/auth\/user\/friends\?n=100&offset=\d+&offline=(true|false)$/.test(path) || /^\/worlds\/wrld_[a-zA-Z0-9-]{8,64}$/.test(path) || /^\/profile\/(usr_[a-zA-Z0-9-]{8,64}|[a-zA-Z0-9]{8,32})$/.test(path))) throw new ApiError('許可されていないAPIパスです。');
   signal.throwIfAborted();
   const s = await state();
   if (s.cooldownUntil > Date.now()) throw new ApiError('APIの待機時間中です。', 429, String((s.cooldownUntil - Date.now()) / 1000));
   const delay = Math.max(0, (s.lastRequestAt || 0) + 2200 - Date.now());
   if (delay) await sleep(delay, signal);
   signal.throwIfAborted();
-  await patchState({ lastRequestAt: Date.now(), phase: 'running', message: progress });
+  await patchState({ lastRequestAt: Date.now(), ...(!quiet?{phase:'running',message:progress}:{}) });
   // A persistent watchdog recovers if Chrome terminates this service worker mid-run.
-  await chrome.alarms.create(ALARM, { when: Date.now() + 90000 });
+  if(!quiet)await chrome.alarms.create(ALARM, { when: Date.now() + 90000 });
   let response;
   try {
     response = await fetch(API + path, { method: 'GET', credentials: 'include', cache: 'no-store', redirect: 'manual',
@@ -79,8 +80,8 @@ async function request(path, signal, progress) {
   if (!response.headers.get('Content-Type')?.includes('application/json')) throw new ApiError('JSON以外の応答です。vrchat.comのログイン状態を確認してください。', 403);
   try { return await response.json(); } catch { throw new ApiError('APIのJSONを読み取れませんでした。'); }
 }
-async function identity(signal, label) {
-  const raw = await request('/auth/user', signal, label);
+async function identity(signal, label, options) {
+  const raw = await request('/auth/user', signal, label, options);
   try { return currentUser(raw,Date.now()); } catch { throw new ApiError('ログインまたは2段階認証をvrchat.comで完了してください。', 401); }
 }
 async function pages(offline, offset, maximum, signal, me) {
@@ -184,6 +185,7 @@ async function collect(signal) {
 }
 function run() {
   if (activeRun) return activeRun;
+  if (activeProfile) return activeProfile.catch(()=>{}).then(run);
   controller = new AbortController();
   activeRun = imageCollector.idle().then(()=>collect(controller.signal)).catch(() => {}).finally(() => { activeRun = null; controller = null; void cacheImagesQuietly(); });
   return activeRun;
@@ -191,14 +193,47 @@ function run() {
 async function pause() {
   await chrome.storage.local.set({ settings: { ...await configuration(), enabled: false } });
   controller?.abort();
+  profileController?.abort();
   await imageCollector.pause();
+  if(activeProfile)await activeProfile.catch(()=>{});
   if (activeRun) await activeRun;
   imageCollector.resume();
   await chrome.alarms.clear(ALARM);
   await patchState({ phase: 'paused', message: '収集を停止しています。', nextRunAt: null });
   await chrome.action.setBadgeText({ text: '' });
 }
+async function lookupXProfile({accountId,userId,force=false}) {
+  if(typeof accountId!=='string'||typeof userId!=='string'||!USER_ID.test(accountId)||!USER_ID.test(userId))throw Error('ユーザーIDが不正です。');
+  const cache=(await chrome.storage.local.get('xProfileCache')).xProfileCache||{},profile=readXCache(cache,accountId,userId);
+  if(profileResetting)throw Error('記録を削除しています。完了してから開き直してください。');
+  if(profile && Date.now()-profile.checkedAt<(force===true?60000:X_CACHE_TTL))return {ok:true,profile,cached:true};
+  if(activeProfile || activeRun)return {ok:true,busy:true,profile};
+  const abort=new AbortController();profileController=abort;
+  activeProfile=(async()=>{
+    if(!(await list('friends',accountId)).some(f=>f.id===userId))throw Error('このアカウントで記録されたユーザーを選択してください。');
+    const config=await configuration();
+    if(!validContact(config.contact))throw Error('プロフィールの取得には、収集設定で連絡先を保存してください。');
+    await imageCollector.idle();abort.signal.throwIfAborted();await ensureUA(config);
+    const me=await identity(abort.signal,'公開プロフィールのアカウント確認',{quiet:true});
+    if(me.id!==accountId)throw Error('表示アカウントとVRChatのログインアカウントが異なります。');
+    const raw=await request('/profile/'+userId,abort.signal,'公開プロフィールを取得中',{quiet:true});
+    if(raw?.id!==userId)throw Error('プロフィールのユーザーIDが一致しません。');
+    if(!Array.isArray(raw.bioLinks) && typeof raw.bio!=='string')throw Error('公開プロフィールからリンク情報を取得できませんでした。');
+    const urls=extractXProfiles(raw);
+    const after=await identity(abort.signal,'公開プロフィールのアカウント再確認',{quiet:true});
+    if(after.id!==accountId)throw Error('取得中にアカウントが切り替わったため、プロフィールを保存しませんでした。');
+    abort.signal.throwIfAborted();
+    const entry={accountId,userId,urls,checkedAt:Date.now()};
+    await chrome.storage.local.set({xProfileCache:writeXCache(cache,entry)});
+    return {ok:true,profile:entry};
+  })().catch(async error=>{
+    if(error.status===429 || error.retryAfter!=null){const s=await state();await patchState({cooldownUntil:Math.max(s.cooldownUntil||0,Date.now()+retryDelay(error.retryAfter,Date.now(),1))});}
+    return {ok:false,profile,error:abort.signal.aborted?'プロフィールの取得を中止しました。':error.message};
+  }).finally(()=>{activeProfile=null;profileController=null;});
+  return activeProfile;
+}
 async function command(message) {
+  if(message.type==='X_PROFILE')return lookupXProfile(message);
   if (message.type === 'IMPORT_SETTINGS') {
     const current = await chrome.storage.local.get('cloudSync');
     const imported = resolveSettingsBackup(message.backup, current.cloudSync);
@@ -282,9 +317,10 @@ async function command(message) {
     void run(); return { ok: true };
   }
   if (message.type === 'CLEAR') {
-    await pause();
-    await cloud.pause();
+    profileResetting=true;
     try {
+      await pause();
+      await cloud.pause();
       const cloudSaved=await chrome.storage.local.get(['cloudSync','cloudState']),cloudConfig=cloudSaved.cloudSync || {},serverRetryAt=serverRetryDeadline(cloudSaved.cloudState);
       await chrome.storage.local.set({cloudSync:{...cloudConfig,enabled:false},cloudState:{phase:'disabled',serverRetryAt,retryAt:serverRetryAt,message:'ローカル記録の削除に伴い同期を停止しました。'},cloudDiagnostic:{},cloudCheckpoint:{cursor:0,receipts:{}}});
       await chrome.alarms.clear(CLOUD_ALARM);
@@ -293,17 +329,17 @@ async function command(message) {
       await chrome.alarms.clear(IMAGE_ALARM);
       const s = await state();
       // Clearing personal data must not clear server-imposed backoff or the rate-limit clock.
-      await chrome.storage.local.set({ accountMeta: {}, state: { phase: 'paused', message: '保存データを削除しました。', cooldownUntil: s.cooldownUntil || 0,
+      await chrome.storage.local.set({ accountMeta: {}, xProfileCache: {}, state: { phase: 'paused', message: '保存データを削除しました。', cooldownUntil: s.cooldownUntil || 0,
         failures: s.failures || 0, lastRequestAt: s.lastRequestAt || 0, lastStartedAt: s.lastStartedAt || 0 } });
       return { ok: true };
-    } finally { cloud.resume(); }
+    } finally { cloud.resume(); profileResetting=false; }
   }
   throw new Error('不明な操作です。');
 }
 let commandQueue = Promise.resolve();
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL(''))) return false;
-  if (message.type === 'SYNC' || message.type === 'TEST_SYNC') {
+  if (message.type === 'SYNC' || message.type === 'TEST_SYNC' || message.type === 'X_PROFILE') {
     command(message).then(respond, error => respond({ok:false,error:error.message}));
     return true;
   }
