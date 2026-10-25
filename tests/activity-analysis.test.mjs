@@ -94,3 +94,50 @@ test('intelligence tabs and timeline mount remain part of the packaged dashboard
   assert.match(js,/function renderActivity\(\)/);
   assert.match(js,/function renderHome\(\)/);
 });
+
+test('the v0.4.0 proposal keeps v0.3.2 backups and storage schema usable',async()=>{
+  const pkg=JSON.parse(fs.readFileSync(new URL('../package.json',import.meta.url),'utf8'));
+  const lock=JSON.parse(fs.readFileSync(new URL('../package-lock.json',import.meta.url),'utf8'));
+  const manifest=JSON.parse(fs.readFileSync(new URL('../extension/manifest.json',import.meta.url),'utf8'));
+  const {VERSION}=await import('../extension/core.js');
+  const {validateSettingsBackup}=await import('../extension/settings-backup.js');
+  assert.equal(pkg.version,'0.4.0');
+  assert.equal(pkg.version,lock.version);
+  assert.equal(pkg.version,lock.packages[''].version);
+  assert.equal(pkg.version,manifest.version);
+  assert.equal(pkg.version,VERSION);
+  const previousBackup={format:'vrc-gathering-settings',schema:1,appVersion:'0.3.2',exportedAt:'2026-10-24T00:00:00Z',
+    settings:{collection:{contact:'https://github.com/example',pollSeconds:180,retentionDays:30,offlineRefreshMinutes:60},
+      sync:{enabled:false,endpoint:''},images:{enabled:false}}};
+  assert.equal(validateSettingsBackup(previousBackup).appVersion,'0.3.2');
+  const dbSource=fs.readFileSync(new URL('../extension/db.js',import.meta.url),'utf8');
+  const syncSource=fs.readFileSync(new URL('../extension/sync-format.js',import.meta.url),'utf8');
+  assert.ok(dbSource.includes("indexedDB.open('vrc-friends-observer', 2)"));
+  assert.match(syncSource,/export const RECORD_SCHEMA = 2;/);
+  assert.match(syncSource,/export const SYNC_PROTOCOL = 2;/);
+});
+
+test('A/B/C initial navigation does not overlay the v0.3.2 friends list or remove settings backup',()=>{
+  const html=fs.readFileSync(new URL('../extension/dashboard.html',import.meta.url),'utf8');
+  const script=fs.readFileSync(new URL('../extension/dashboard.js',import.meta.url),'utf8');
+  const blocks=[...html.matchAll(/<section id="(home|analytics|friends|ranking|journey|history|settings|help)Panel"[^>]*>/g)];
+  assert.equal(blocks.length,8);
+  assert.deepEqual(blocks.filter(item=>!item[0].includes('hidden')).map(item=>item[1]),['home']);
+  for(const name of ['friends','ranking','journey','history','settings','help'])
+    assert.ok(html.includes('data-tab="'+name+'"'));
+  for(const id of ['exportSettings','importSettings','settingsImportDialog','syncEndpoint','journeyPanel','activityWorld'])
+    assert.ok(html.includes('id="'+id+'"'));
+  assert.ok(script.includes('initializeSettingsBackup('));
+  assert.ok(script.includes("'activityRange','activityFilter','activityWorld'"));
+  assert.ok(script.includes('worldId:worldSelect.value'));
+});
+
+test('world filter includes only users observed in the selected world, not users in private state only',async()=>{
+  const {demoData}=await import('../extension/demo.js');
+  const demo=demoData();
+  const chosen='wrld_demoobservatory';
+  const model=buildActivityTimeline(demo.friends,demo.events,demo.worlds,{now:Date.now(),rangeMs:86400000,worldId:chosen});
+  assert.ok(model.rows.length>0);
+  assert.ok(model.rows.every(row=>row.segments.some(s=>s.worldId===chosen) ||
+    row.points.some(p=>p.state.location?.worldId===chosen)));
+});
