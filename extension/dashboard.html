@@ -59,7 +59,7 @@
   </section>
 </section>
 
-<section id="friendsPanel" class="panel">
+<section id="friendsPanel" class="panel" hidden>
   <div class="toolbar"><input id="search" type="search" placeholder="フレンド名・ワールド名・IDで検索" aria-label="フレンド検索"><select id="filter" aria-label="状態フィルター"><option value="all">すべて</option><option value="online">ゲーム内</option><option value="active">Web／アプリ</option><option value="offline">オフライン</option><option value="private">所在非公開</option><option value="stale">古い観測</option><option value="removed">名簿から外れたフレンド</option></select><select id="friendSort" aria-label="フレンドの並べ替え"><option value="presence">接続状態順</option><option value="name">名前順</option><option value="name-desc">名前の逆順</option><option value="world">ワールド名順</option><option value="latest">観測が新しい順</option><option value="oldest">観測が古い順</option><option value="duration">同じ状態の観測開始が早い順</option><option value="platform">プラットフォーム順</option></select><span id="count" class="muted push"></span><button id="exportCSV">一覧CSV</button><button id="exportJSON">全履歴JSON</button></div>
   <div class="table-wrap"><table><thead><tr><th>フレンド</th><th>最終観測状態</th><th>ワールド / インスタンス</th><th>種類 / 地域</th><th>観測上の継続</th><th>観測日時</th></tr></thead><tbody id="friendsBody"></tbody></table></div>
   <div id="empty" class="empty"><div class="empty-icon">◎</div><h2>まだ観測データがありません</h2><p>同じChromeでVRChatにログインし、<br>「収集設定」を保存して「収集を開始」を押してください。</p><button id="emptySettings">収集設定を開く</button></div>
