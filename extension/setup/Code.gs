@@ -1,8 +1,8 @@
 /* Deploy with Protocol.gs. Authentication precedes all spreadsheet access. */
-const TABLES = {friends:'VRCFriends',events:'VRCEvents',worlds:'VRCWorlds',runs:'VRCRuns',accounts:'VRCAccounts',visits:'VRCVisits',encounters:'VRCEncounters',profiles:'VRCProfiles'};
+const TABLES = {friends:'VRCFriends',events:'VRCEvents',worlds:'VRCWorlds',runs:'VRCRuns',accounts:'VRCAccounts',visits:'VRCVisits',encounters:'VRCEncounters',profiles:'VRCProfiles',xFollowers:'VRCXFollowers'};
 const LEGACY_HEADERS = ['key','version','kind','accountId','observedAt','displayName','presence','worldId','instanceId','worldName','payload'];
 const HEADERS = ['record_id','revision','record_kind','account_id','observed_at_ms','display_name','presence','world_id','instance_id','world_name','payload_json','schema_version','operation','entity_id','received_at_ms','extensions_json'];
-const FIELDS = {friends:['platform','state_first_observed_at_ms','is_friend'],events:['event_kind','previous_observed_at_ms','previous_world_id','previous_instance_id'],worlds:['author_name','capacity'],runs:['started_at_ms','completed_at_ms','observed_count','changed_count'],accounts:[],visits:['started_at_ms','last_seen_at_ms','ended_at_ms'],encounters:['started_at_ms','last_seen_at_ms','ended_at_ms','visit_started_at_ms','relation','other_instance_id'],profiles:['x_urls_json']};
+const FIELDS = {friends:['platform','state_first_observed_at_ms','is_friend'],events:['event_kind','previous_observed_at_ms','previous_world_id','previous_instance_id'],worlds:['author_name','capacity'],runs:['started_at_ms','completed_at_ms','observed_count','changed_count'],accounts:[],visits:['started_at_ms','last_seen_at_ms','ended_at_ms'],encounters:['started_at_ms','last_seen_at_ms','ended_at_ms','visit_started_at_ms','relation','other_instance_id'],profiles:['x_urls_json'],xFollowers:['x_url','followers_count','approximate','source']};
 const MAX_RECORDS = 50000;
 function configuration_(detailed = false) {
   const props=PropertiesService.getScriptProperties(), spreadsheetId=(props.getProperty('SPREADSHEET_ID') || '').trim(),token=props.getProperty('SYNC_TOKEN');
@@ -33,10 +33,10 @@ function rows_(sheet,width) {
 function safeCell_(value) {const s=String(value == null?'':value);return /^[\s\uFEFF]*[=+@-]|^[\t\r\n]/.test(s)?"'"+s:s;}
 function row_(record,revision,receivedAt) {
   const v=record.value,s=record.kind==='events'?v.current:v;
-  const extra={friends:[v.platform,v.stateFirstObservedAt,v.isFriend],events:[v.kind,v.previousObservedAt,v.previous?.location?.worldId,v.previous?.location?.instanceId],worlds:[v.authorName,v.capacity],runs:[v.startedAt,v.completedAt,v.observedCount,v.changedCount],accounts:[],visits:[v.startedAt,v.lastSeenAt,v.endedAt],encounters:[v.startedAt,v.lastSeenAt,v.endedAt,v.visitStartedAt,v.relation,v.otherInstanceId],profiles:[canonical(v.urls)]}[record.kind];
+  const extra={friends:[v.platform,v.stateFirstObservedAt,v.isFriend],events:[v.kind,v.previousObservedAt,v.previous?.location?.worldId,v.previous?.location?.instanceId],worlds:[v.authorName,v.capacity],runs:[v.startedAt,v.completedAt,v.observedCount,v.changedCount],accounts:[],visits:[v.startedAt,v.lastSeenAt,v.endedAt],encounters:[v.startedAt,v.lastSeenAt,v.endedAt,v.visitStartedAt,v.relation,v.otherInstanceId],profiles:[canonical(v.urls)],xFollowers:[v.url,v.followers,v.approximate,v.source]}[record.kind];
   return [record.key,revision,record.kind,v.accountId,v.observedAt,safeCell_(v.displayName||v.name),safeCell_(s.presence),
     safeCell_(s.location?.worldId||(record.kind==='worlds'?v.id:'')),safeCell_(s.location?.instanceId),safeCell_(record.kind==='worlds'?v.name:''),
-    canonical(v),2,'upsert',v.id||v.userId||(record.kind==='runs'?String(v.startedAt):v.accountId),receivedAt,canonical(v.extensions||{}),
+    canonical(v),2,'upsert',v.id||v.userId||(record.kind==='runs'?String(v.startedAt):record.kind==='xFollowers'?v.url.slice(14):v.accountId),receivedAt,canonical(v.extensions||{}),
     ...extra.map(v=>typeof v==='number'||typeof v==='boolean'?v:safeCell_(v))];
 }
 function writeChanges_(table,changes) {
@@ -147,7 +147,7 @@ function createSyncToken() {
 }
 function setup(){
   const lock=LockService.getScriptLock();if(!lock.tryLock(10000))throw Error('BUSY');
-  try{database_(configuration_(true));if(!ScriptApp.getProjectTriggers().some(t=>t.getHandlerFunction()==='pruneRecords'))ScriptApp.newTrigger('pruneRecords').timeBased().everyDays(1).create();return '8種類の記録テーブルとVRCSchema、日次整理を設定しました。旧VRCRecordsは移行元として残しています。';}
+  try{database_(configuration_(true));if(!ScriptApp.getProjectTriggers().some(t=>t.getHandlerFunction()==='pruneRecords'))ScriptApp.newTrigger('pruneRecords').timeBased().everyDays(1).create();return '9種類の記録テーブルとVRCSchema、日次整理を設定しました。旧VRCRecordsは移行元として残しています。';}
   finally{lock.releaseLock();}
 }
 function pruneRecords(){

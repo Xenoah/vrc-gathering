@@ -17,7 +17,8 @@ async function harness(handler, allowCloud = true){
     get:async key=>{const keys=Array.isArray(key)?key:[key];return structuredClone(Object.fromEntries(keys.filter(k=>k in store).map(k=>[k,store[k]])));},
     set:async values=>Object.assign(store,structuredClone(values)),setAccessLevel:async()=>{}
   };
-  const chrome={permissions:{contains:async()=>allowCloud},storage:{local:storage},alarms:{create:async(n,v)=>alarms.set(n,v),get:async n=>alarms.get(n),clear:async n=>alarms.delete(n),onAlarm:hook('alarm')},
+  const scripts=new Map();
+  const chrome={scripting:{getRegisteredContentScripts:async()=>[...scripts.values()],registerContentScripts:async rows=>rows.forEach(r=>scripts.set(r.id,r)),updateContentScripts:async rows=>rows.forEach(r=>scripts.set(r.id,r)),unregisterContentScripts:async({ids})=>ids.forEach(id=>scripts.delete(id))},permissions:{contains:async()=>allowCloud},storage:{local:storage},alarms:{create:async(n,v)=>alarms.set(n,v),get:async n=>alarms.get(n),clear:async n=>alarms.delete(n),onAlarm:hook('alarm')},
     action:{setBadgeText:async()=>{},setBadgeBackgroundColor:async()=>{},onClicked:hook('click')},
     runtime:{id:'testextension',getURL:p=>'chrome-extension://testextension/'+p,onMessage:hook('message'),onInstalled:hook('installed'),onStartup:hook('startup')},
     declarativeNetRequest:{updateDynamicRules:async v=>{saved.rules=v;}},tabs:{create:async()=>{}}};
@@ -37,13 +38,14 @@ async function harness(handler, allowCloud = true){
   const backup=new vm.SourceTextModule(await fs.readFile(new URL('settings-backup.js',root),'utf8'),{context});await backup.link(spec=>spec==='./core.js'?core:sync);
   const connections=new vm.SourceTextModule(await fs.readFile(new URL('connections.js',root),'utf8'),{context});await connections.link(()=>{});
   const xProfiles=new vm.SourceTextModule(await fs.readFile(new URL('x-profile.js',root),'utf8'),{context});await xProfiles.link(()=>{});
+  const followers=new vm.SourceTextModule(await fs.readFile(new URL('x-followers.js',root),'utf8'),{context});await followers.link(spec=>spec==='./sync-format.js'?format:xProfiles);
   const bg=new vm.SourceTextModule(await fs.readFile(new URL('background.js',root),'utf8'),{context});
-  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:db);await bg.evaluate();
+  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:spec==='./x-followers.js'?followers:db);await bg.evaluate();
   async function flush(){for(let i=0;i<15;i++)await new Promise(setImmediate);}
   await flush();
   const command=message=>new Promise(resolve=>events.message(message,{id:'testextension',url:'chrome-extension://testextension/dashboard.html'},resolve));
   const start=async()=>{assert.equal((await command({type:'SAVE',settings:{contact:'https://github.com/example'}})).ok,true);await command({type:'START'});await flush();};
-  return {store,saved,calls,alarms,command,start,flush,advance:ms=>{now+=ms;},stop:()=>{closed=true;},events};
+  return {store,saved,calls,alarms,scripts,command,start,flush,advance:ms=>{now+=ms;},stop:()=>{closed=true;},events};
 }
 const good=url=>({body:url.pathname.endsWith('/auth/user')?owner:url.pathname.endsWith('/friends')?(url.searchParams.get('offline')==='true'?[]:[online]):{id:wid,name:'架空ワールド',capacity:16,unityPackages:[{assetUrl:'SECRET_ASSET'}]}});
 
@@ -92,7 +94,7 @@ test('cloud configuration requires optional Google permissions and cannot alter 
   assert.equal(response.ok,false);assert.match(response.error,/権限/);assert.equal(h.store.cloudSync,undefined);assert.equal(h.calls.length,0);h.stop();
 });
 test('cloud setup schedules sync, uses no VRChat cookies, and clearing local records disables sync',async()=>{
-  const h=await harness((url,n,options)=>({body:JSON.parse(options.body).action==='hello'?{protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles'],retentionDays:0,maxBatch:100}:{protocol:2,ok:true,datasetId:'test',records:[],cursor:0,hasMore:false}}));
+  const h=await harness((url,n,options)=>({body:JSON.parse(options.body).action==='hello'?{protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles','xFollowers'],retentionDays:0,maxBatch:100}:{protocol:2,ok:true,datasetId:'test',records:[],cursor:0,hasMore:false}}));
   const response=await h.command({type:'SAVE_SYNC',settings:{enabled:true,endpoint:'https://script.google.com/macros/s/test/exec',token:'test_token_0123456789_abcdefghijklmnopqrstuvwxyz'}});
   assert.equal(response.ok,true);await h.flush();assert.equal(h.store.cloudState.phase,'ready');
   assert.equal(h.calls.length,2);assert.equal(h.calls[0].options.credentials,'omit');assert.equal(h.calls[0].options.method,'POST');
@@ -113,7 +115,7 @@ test('image collection is opt-in and candidates are queued only after the accoun
 });
 
 test('connection test command uses saved settings and performs one hello without enabling sync',async()=>{
-  const hello={protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles'],retentionDays:0,maxBatch:100};
+  const hello={protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles','xFollowers'],retentionDays:0,maxBatch:100};
   const h=await harness(()=>({body:hello}));
   await h.command({type:'SAVE_SYNC',settings:{enabled:false,endpoint:'https://script.google.com/macros/s/test/exec',token:'test_token_0123456789_abcdefghijklmnopqrstuvwxyz'}});
   assert.equal(h.calls.length,0);const response=await h.command({type:'TEST_SYNC'});assert.equal(response.connected,true);assert.equal(h.calls.length,1);
@@ -247,4 +249,31 @@ test('the real worker exports and restores X profiles through the GAS sync adapt
   const restored=await h.command({type:'SYNC',force:true});assert.equal(restored.ok,true);
   assert.deepEqual(h.store.xProfileCache[uid+'/'+fid].urls,['https://x.com/example']);
   h.stop();
+});
+
+test('X header counts require opt-in, a top-level X sender and an already linked profile',async()=>{
+  const h=await harness(good);await h.start();
+  const now=h.store.accountMeta[uid].lastSuccessAt;
+  h.store.xProfileCache={[uid+'/'+fid]:{accountId:uid,userId:fid,checkedAt:now,urls:['https://x.com/example']}};
+  const message={type:'X_FOLLOWERS_OBSERVED',url:'https://x.com/example',followers:12345,approximate:false};
+  const sender={id:'testextension',url:'https://x.com/Example',frameId:0,tab:{id:1}};
+  const observe=(changes={},origin=sender)=>new Promise(resolve=>h.events.message({...message,...changes},origin,resolve));
+  assert.equal((await observe()).ok,false);assert.equal(h.store.xFollowerCache,undefined);
+  assert.equal((await h.command({type:'SAVE_X_FOLLOWERS',enabled:true})).ok,true);
+  assert.equal(h.scripts.get('vrc-x-followers').matches[0],'https://x.com/*');
+  for(const invalid of [{...sender,frameId:1},{...sender,id:'other'},{...sender,url:'https://evil.test/Example'},{...sender,url:'https://x.com/Example/status/1'}])assert.equal((await observe({},invalid)).ok,false);
+  for(const invalid of [{url:'https://x.com/other'},{followers:-1},{followers:Infinity},{approximate:'yes'}])assert.equal((await observe(invalid)).ok,false);
+  const calls=h.calls.length;assert.equal((await observe()).ok,true);await h.flush();
+  assert.equal(h.store.xFollowerCache['xFollowers:'+uid+':example'].followers,12345);assert.equal(h.calls.length,calls);
+  assert.equal((await h.command({type:'SAVE_X_FOLLOWERS',enabled:false})).ok,true);assert.equal(h.scripts.size,0);assert.equal((await observe({followers:99})).ok,false);
+  await h.command({type:'CLEAR'});assert.deepEqual(h.store.xFollowerCache,{});h.stop();
+});
+
+test('the worker sends follower metrics to GAS and restores them without collecting images',async()=>{
+  const gas=gasHarness(),h=await harness((url,n,options)=>url.hostname==='script.google.com'?{body:gas.request(JSON.parse(options.body))}:good(url));
+  await h.start();h.store.xFollowerCache={['xFollowers:'+uid+':example']:{accountId:uid,url:'https://x.com/example',followers:25000,approximate:true,source:'x-profile',observedAt:h.store.accountMeta[uid].lastSuccessAt}};
+  h.store.cloudSync={enabled:true,endpoint:'https://script.google.com/macros/s/test_deployment/exec',token:TOKEN};
+  assert.equal((await h.command({type:'SYNC',force:true})).ok,true);assert.equal(gas.table('VRCXFollowers').length,2);
+  h.store.xFollowerCache={};h.store.cloudCheckpoint={cursor:0,receipts:{}};h.advance(61000);
+  assert.equal((await h.command({type:'SYNC',force:true})).ok,true);assert.equal(h.store.xFollowerCache['xFollowers:'+uid+':example'].followers,25000);h.stop();
 });

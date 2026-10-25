@@ -10,9 +10,11 @@ import { initializeGasGuide } from './setup-guide.js';
 import { initializeSettingsBackup } from './settings-backup-ui.js';
 import { createConnectionsView } from './connections-ui.js';
 import { createAnalysisLab } from './analysis-lab-ui.js';
+import { X_FOLLOWER_ORIGINS, followerRecords, bestFollowerMetric, followerText } from './x-followers.js';
 import { createXProfileView } from './x-profile-ui.js';
 import { buildAnalysisReport, DAY } from './analysis-lab.js';
 import { lineChart, barChart, donutChart, columnChart } from './charts.js';
+import { userStatus, USER_STATUSES } from './user-status.js';
 import { initializeNavigationIcons } from './navigation-icons.js';
 
 const $ = id => document.getElementById(id), isDemo = new URLSearchParams(location.search).get('demo') === '1';
@@ -20,9 +22,9 @@ const dateFormat = new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', mo
 const date = v => v ? dateFormat.format(v) : '未確認';
 const iso = v => v ? new Date(v).toISOString() : '';
 const presenceNames = { online:'ゲーム内', active:'Web／アプリ', offline:'現実世界', unknown:'不明' };
-const statusNames = { active:'オンライン', 'join me':'Join Me', 'ask me':'Ask Me', busy:'取り込み中', offline:'現実世界' };
 const accessNames = { public:'Public', friends:'Friends', 'friends-plus':'Friends+', invite:'Invite', 'invite-plus':'Invite+', 'group-public':'Group Public', 'group-plus':'Group+', 'group-members':'Group', 'group-unknown':'Group', unknown:'不明' };
 let data = { friends:[], events:[], worlds:[] }, config = { ...DEFAULTS }, state = {}, selectedAccount = '', dirty = false, renderTimer, loaded = false, cloudConfig = {}, cloudState = {}, cloudDiagnostic = {}, syncPermissions = [], testingConnection = false, syncDirty = false, imageDirty = false, imageConfig = {}, imageRows = [], imageRevision = null, loadedImageRevision;
+let xProfiles={},xMetrics={},xFollowerConfig={},xFollowerDirty=false;
 const demo = isDemo ? demoData() : null;
 initializeNavigationIcons();
 function node(tag, content, className) { const el = document.createElement(tag); if (content != null) el.textContent = content; if (className) el.className = className; return el; }
@@ -30,7 +32,7 @@ const imageURLs=new Map(),imageElements=new Map();let currentGraph;
 const network=createNetworkView({viewport:$('networkViewport'),stage:$('networkStage'),canvas:$('networkCanvas'),zoomLabel:$('networkZoom'),directional:true,wheelZoom:true,motionButton:$('networkMotion'),onSelect:showNetworkDetail,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const connections=createConnectionsView({node,date,avatar,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const analysisLab=createAnalysisLab({node,date,download,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
-const xProfileView=createXProfileView({node,date,request:message=>chrome.runtime.sendMessage(message),isOpen:()=>$('detail').open});
+const xProfileView=createXProfileView({node,date,request:message=>chrome.runtime.sendMessage(message),isOpen:()=>$('detail').open,getFollower:(accountId,url)=>xMetrics['xFollowers:'+accountId+':'+url.slice(14)],followersEnabled:()=>xFollowerConfig.enabled===true});
 function avatar(kind,id,name) {
   const url=imageURLs.get(kind+':'+id);
   const privateClass=kind==='user'&&data.friends.some(f=>f.id===id&&f.location?.kind==='private')?' is-private':'';
@@ -43,6 +45,8 @@ async function loadImages() {
   imageRows=isDemo||!selectedAccount?[]:await cachedImages(selectedAccount);loadedImageRevision=revision;
   for(const row of imageRows){if(!row.blob)continue;const key=row.kind+':'+row.id,url=URL.createObjectURL(row.blob);imageURLs.set(key,url);const img=new Image();img.onload=()=>{network.redraw();connections.redraw();analysisLab.redraw();};img.src=url;imageElements.set(key,img);}
 }
+function statusBadge(friend) { const status=userStatus(friend),badge=node('span',status.label,'user-status status-'+status.key);badge.style.setProperty('--user-status-color',status.color);return badge; }
+$('statusLegend').replaceChildren(...Object.keys(USER_STATUSES).filter(key=>key!=='unknown').map(status=>statusBadge({status})));
 function pill(label, cls = '') { return node('span', label, 'pill ' + cls); }
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(renderTimer); renderTimer = setTimeout(() => { $('toast').hidden = true; }, 6000); }
 async function call(message,{rethrow=false}={}) {
@@ -81,13 +85,14 @@ function render() {
   $('private').textContent = fresh.filter(f => f.location.kind === 'private').length.toLocaleString();
   $('stale').textContent = active.filter(stale).length.toLocaleString();
   const q = $('search').value.trim().toLocaleLowerCase(), filter = $('filter').value;
+  const metrics=new Map(data.friends.map(f=>[f.id,bestFollowerMetric(xProfiles,xMetrics,selectedAccount,f.id)]));
   const rows = sortFriends(data.friends.filter(f => {
     if (filter === 'removed' ? f.isFriend : !f.isFriend) return false;
     if (filter === 'stale' && !stale(f)) return false;
     if (filter === 'private' && f.location.kind !== 'private') return false;
     if (['online','active','offline'].includes(filter) && f.presence !== filter) return false;
     return !q || [f.displayName, f.id, place(f), f.statusDescription, f.location.instanceId].join(' ').toLocaleLowerCase().includes(q);
-  }), $('friendSort').value, new Map(data.worlds.map(w=>[w.id,w.name])));
+  }), $('friendSort').value, new Map(data.worlds.map(w=>[w.id,w.name])),new Map([...metrics].map(([id,v])=>[id,v?.followers])));
   $('count').textContent = `${rows.length.toLocaleString()} 件`;
   $('empty').hidden = !!data.friends.length;
   const body = $('friendsBody'); body.replaceChildren();
@@ -97,8 +102,10 @@ function render() {
     tr.addEventListener('click', () => showDetail(f)); tr.addEventListener('keydown', e => { if(e.key === 'Enter') showDetail(f); });
     const nameCell = node('td'), wrap = node('div', null, 'friend-name'), icon = avatar('user',f.id,f.displayName), names = node('div');
     names.append(node('strong', f.displayName), node('span', f.platform || 'プラットフォーム未確認', 'sub')); wrap.append(icon,names); nameCell.append(wrap);
-    const statusCell = node('td'); statusCell.append(pill(presenceNames[f.presence] || '不明', f.presence));
-    statusCell.append(node('span', f.status ? statusNames[f.status] || f.status : '', 'sub'));
+    const statusCell = node('td'); statusCell.append(statusBadge(f));
+    if(f.presence!=='offline')statusCell.append(node('span',presenceNames[f.presence]||'不明','sub'));
+    const followerCell=node('td',followerText(metrics.get(f.id)),'follower-count'),metric=metrics.get(f.id);
+    if(metric){followerCell.append(node('span',date(metric.observedAt),'sub'));followerCell.title=metric.url+' · Xプロフィールの表示値（確認時点）';}
     const placeCell = node('td'); placeCell.append(node('span', place(f), 'world-name'), node('span', shortId(f.location.instanceId,38), 'sub'));
     const typeCell = node('td'); typeCell.append(node('span', accessNames[f.location.access] || f.location.access || '—'), node('span', f.location.region?.toUpperCase() || '—', 'sub'));
     const durationCell = node('td'), duration = observedDurations(f);
@@ -110,10 +117,10 @@ function render() {
     } else durationCell.textContent = '—';
     durationCell.title = '観測された状態から算出。実際の開始時刻や未観測期間の継続は保証されません。';
     const timeCell = node('td'); timeCell.append(node('span', date(f.observedAt))); if(stale(f)) timeCell.append(node('span','古い観測','sub'));
-    tr.append(nameCell,statusCell,placeCell,typeCell,durationCell,timeCell); body.append(tr);
+    tr.append(nameCell,statusCell,followerCell,placeCell,typeCell,durationCell,timeCell); body.append(tr);
   }
-  if (rows.length > 1000) { const tr=node('tr'),td=node('td','画面には先頭1,000件を表示しています。検索で絞り込むかCSVで全件を確認できます。');td.colSpan=6;tr.append(td);body.append(tr); }
-  if (!rows.length && data.friends.length) { const tr=node('tr'),td=node('td','条件に一致するフレンドはいません。');td.colSpan=6;tr.append(td);body.append(tr); }
+  if (rows.length > 1000) { const tr=node('tr'),td=node('td','画面には先頭1,000件を表示しています。検索で絞り込むかCSVで全件を確認できます。');td.colSpan=7;tr.append(td);body.append(tr); }
+  if (!rows.length && data.friends.length) { const tr=node('tr'),td=node('td','条件に一致するフレンドはいません。');td.colSpan=7;tr.append(td);body.append(tr); }
   renderHistory($('historyList'), data.events);
   renderInsights();
   renderHome();
@@ -354,14 +361,14 @@ function showDetail(f) {
   $('detailName').replaceChildren(avatar('user',f.id,f.displayName),document.createTextNode(f.displayName));
   const fields=$('detailFields');fields.replaceChildren();
   const w=data.worlds.find(w=>w.id===f.location.worldId);
-  const values=[['ユーザーID',f.id],['観測日時',date(f.observedAt)+(stale(f)?'（古い観測）':'')],['名前・状態文の取得',date(f.profileObservedAt)],['接続状態',presenceNames[f.presence]],['ステータス',statusNames[f.status]||f.status||'—'],['メッセージ',f.statusDescription||'—'],['プラットフォーム',f.platform||'—'],['ワールド',place(f)],['ワールドID',f.location.worldId||'—'],['インスタンスID',f.location.instanceId||'—'],['種類',accessNames[f.location.access]||f.location.access||'—'],['地域',f.location.region||'—'],['ワールド作者',w?.authorName||'未取得'],['ワールド定員',w?.capacity??'未取得'],['定員の取得日時',date(w?.observedAt)],['初回観測',date(f.firstObservedAt)],['現在の状態の初回観測',date(f.stateFirstObservedAt)]];
+  const values=[['ユーザーID',f.id],['観測日時',date(f.observedAt)+(stale(f)?'（古い観測）':'')],['名前・状態文の取得',date(f.profileObservedAt)],['接続状態',presenceNames[f.presence]],['ステータス',userStatus(f).label],['メッセージ',f.statusDescription||'—'],['プラットフォーム',f.platform||'—'],['ワールド',place(f)],['ワールドID',f.location.worldId||'—'],['インスタンスID',f.location.instanceId||'—'],['種類',accessNames[f.location.access]||f.location.access||'—'],['地域',f.location.region||'—'],['ワールド作者',w?.authorName||'未取得'],['ワールド定員',w?.capacity??'未取得'],['定員の取得日時',date(w?.observedAt)],['初回観測',date(f.firstObservedAt)],['現在の状態の初回観測',date(f.stateFirstObservedAt)]];
   const duration = observedDurations(f);
   if (duration) {
     values.splice(4,0,['状態の観測上の継続',formatObservedDuration(duration.presence) + '（最終観測まで）']);
     if(f.presence==='online' && f.location?.kind==='world')
       values.splice(5,0,['同一ワールドの観測上の継続',formatObservedDuration(duration.place)]);
   }
-  for(const [k,v] of values)fields.append(node('dt',k),node('dd',v));
+  for(const [k,v] of values){const dd=node('dd');if(k==='ステータス')dd.append(statusBadge(f));else dd.textContent=v;fields.append(node('dt',k),dd);}
   const links=node('dd'),label=node('dt','公式サイト');
   const profile=node('a','プロフィールを開く ↗');profile.href='https://vrchat.com/home/user/'+encodeURIComponent(f.id);profile.target='_blank';profile.rel='noreferrer';links.append(profile);
   if(f.location.worldId){const link=node('a','　ワールドを開く ↗');link.href='https://vrchat.com/home/world/'+encodeURIComponent(f.location.worldId);link.target='_blank';link.rel='noreferrer';links.append(link);}
@@ -375,7 +382,7 @@ async function load() {
   if(isDemo){ data=demo;state=demo.state;config={...DEFAULTS,enabled:true};selectedAccount=demo.accountId;
     $('account').replaceChildren(new Option('デモアカウント',demo.accountId));$('demoFlag').hidden=false;
   } else {
-    const saved=await chrome.storage.local.get(['settings','state','accountMeta','cloudSync','cloudState','cloudDiagnostic','imageCacheSettings','imageCacheState']);imageConfig=saved.imageCacheSettings||{};imageRevision=saved.imageCacheState||{};cloudConfig=saved.cloudSync||{};cloudState=saved.cloudState||{};cloudDiagnostic=saved.cloudDiagnostic||{};syncPermissions=await Promise.all(CLOUD_ORIGINS.map(origin=>chrome.permissions?.contains({origins:[origin]}).catch(()=>null) ?? null));config={...DEFAULTS,...saved.settings};state=saved.state||{};
+    const saved=await chrome.storage.local.get(['settings','state','accountMeta','cloudSync','cloudState','cloudDiagnostic','imageCacheSettings','imageCacheState','xProfileCache','xFollowerCache','xFollowerSettings']);xProfiles=saved.xProfileCache||{};xMetrics=Object.fromEntries(followerRecords(saved.xFollowerCache).map(r=>[r.key,r.value]));xFollowerConfig=saved.xFollowerSettings||{};imageConfig=saved.imageCacheSettings||{};imageRevision=saved.imageCacheState||{};cloudConfig=saved.cloudSync||{};cloudState=saved.cloudState||{};cloudDiagnostic=saved.cloudDiagnostic||{};syncPermissions=await Promise.all(CLOUD_ORIGINS.map(origin=>chrome.permissions?.contains({origins:[origin]}).catch(()=>null) ?? null));config={...DEFAULTS,...saved.settings};state=saved.state||{};
     const accounts=saved.accountMeta||{};
     if(!selectedAccount || !accounts[selectedAccount])selectedAccount=state.accountId||Object.keys(accounts)[0]||'';
     $('account').replaceChildren(...Object.entries(accounts).map(([id,meta])=>new Option(meta.displayName||id,id)));
@@ -384,6 +391,9 @@ async function load() {
     else data={friends:[],events:[],worlds:[],runs:[]};
   }
   await loadImages();
+  if(!xFollowerDirty)$('xFollowerEnabled').checked=xFollowerConfig.enabled===true;
+  $('xFollowerStatus').textContent=`保存済みのXアカウント：${Object.values(xMetrics).filter(v=>v.accountId===selectedAccount).length}件 · ${xFollowerConfig.enabled?'取得は有効':'取得は無効'}（保存済みの数値は表示します）`;
+  xProfileView.refresh();
   if(!imageDirty)$('imageEnabled').checked=imageConfig.enabled===true;
   $('imageStatus').textContent=`表示中のアカウント：${imageRows.filter(r=>r.blob).length}枚 · ${(imageRows.reduce((n,r)=>n+(r.bytes||0),0)/1048576).toFixed(1)}MiB · 未取得 ${imageRows.filter(r=>!r.blob||r.cachedUrl!==r.url).length}件`;
   if(!dirty){for(const id of ['contact','pollSeconds','retentionDays','offlineRefreshMinutes']){
@@ -464,8 +474,8 @@ window.addEventListener('focus',()=>void syncView());
 
 initializeGasGuide({showSettings:()=>tab('settings'),notify:toast});
 initializeSettingsBackup({isDemo,download,stamp,call,onImported:async()=>{
-  dirty=false;syncDirty=false;imageDirty=false;$('syncToken').value='';
-  for(const id of ['settingsNotice','syncNotice','imageNotice'])$(id).textContent='';
+  dirty=false;syncDirty=false;imageDirty=false;xFollowerDirty=false;$('syncToken').value='';
+  for(const id of ['settingsNotice','syncNotice','imageNotice','xFollowerNotice'])$(id).textContent='';
   await reload();
 }});
 
@@ -491,3 +501,13 @@ $('grantSyncPermissions').addEventListener('click',async()=>{
   catch(error){toast(error.message);}
 });
 if(!isDemo){chrome.permissions?.onAdded?.addListener(()=>void reload());chrome.permissions?.onRemoved?.addListener(()=>void reload());}
+
+$('xFollowerForm').addEventListener('input',()=>{xFollowerDirty=true;$('xFollowerNotice').textContent='未保存';});
+$('xFollowerForm').addEventListener('submit',async event=>{
+  event.preventDefault();if(isDemo){toast('デモ画面では設定を保存しません。');return;}
+  try{const enabled=$('xFollowerEnabled').checked;
+    if(enabled&&!await chrome.permissions.request({origins:X_FOLLOWER_ORIGINS}))throw Error('Xへの接続が許可されませんでした。');
+    await call({type:'SAVE_X_FOLLOWERS',enabled},{rethrow:true});xFollowerDirty=false;
+    $('xFollowerNotice').textContent=enabled?'保存しました。Xプロフィールを開き直すと取得します。':'取得を無効にしました。';await reload();
+  }catch(error){$('xFollowerNotice').textContent=error.message;}
+});

@@ -6,9 +6,16 @@ import { resolveSettingsBackup } from './settings-backup.js';
 import { reconcileConnections } from './connections.js';
 import { extractXProfiles, readXCache, writeXCache, X_CACHE_TTL } from './x-profile.js';
 import { normalizeRecord, mergeRecord } from './sync-format.js';
+import { X_FOLLOWER_ORIGINS, followerRecords, mergeFollowerCache } from './x-followers.js';
 
 const updateAccounts = createAccountUpdater(chrome.storage.local);
-let profileWrites=Promise.resolve();
+let profileWrites=Promise.resolve(),followerWrites=Promise.resolve(),followerGeneration=0;
+function mergeFollowers(records){
+  const work=followerWrites.then(async()=>{
+    const saved=await chrome.storage.local.get('xFollowerCache');
+    await chrome.storage.local.set({xFollowerCache:mergeFollowerCache(saved.xFollowerCache,records)});
+  });followerWrites=work.catch(()=>{});return work;
+}
 function mergeProfiles(records){
   const work=profileWrites.then(async()=>{
     let cache=(await chrome.storage.local.get('xProfileCache')).xProfileCache||{};
@@ -20,11 +27,14 @@ function mergeProfiles(records){
 async function exportCollected(options){
   const rows=await exportSyncRecords(options),cache=(await chrome.storage.local.get('xProfileCache')).xProfileCache||{};
   for(const entry of Object.values(cache)){const profile=readXCache(cache,entry?.accountId,entry?.userId);if(profile){const record=normalizeRecord('profiles',{...profile,observedAt:profile.checkedAt});if(!options?.keys||options.keys.includes(record.key))rows.push(record);}}
+  const metrics=(await chrome.storage.local.get('xFollowerCache')).xFollowerCache;
+  rows.push(...followerRecords(metrics).filter(r=>!options?.keys||options.keys.includes(r.key)));
   return rows;
 }
 async function mergeCollected(records){
-  await mergeSyncRecords(records.filter(r=>r.kind!=='profiles'));
+  await mergeSyncRecords(records.filter(r=>!['profiles','xFollowers'].includes(r.kind)));
   const profiles=records.filter(r=>r.kind==='profiles');if(profiles.length)await mergeProfiles(profiles);
+  const metrics=records.filter(r=>r.kind==='xFollowers');if(metrics.length)await mergeFollowers(metrics);
 }
 const cloud = createSync({ storage:chrome.storage.local, exportRecords:exportCollected, mergeRecords:mergeCollected, updateAccounts, hasPermission:()=>chrome.permissions.contains({origins:CLOUD_ORIGINS}) });
 const CLOUD_ALARM = 'vrc-observer-cloud';
@@ -253,16 +263,42 @@ async function lookupXProfile({accountId,userId,force=false}) {
   }).finally(()=>{activeProfile=null;profileController=null;});
   return activeProfile;
 }
+async function configureFollowerScript(enabled){
+  const id='vrc-x-followers',registered=await chrome.scripting.getRegisteredContentScripts({ids:[id]});
+  if(!enabled){if(registered.length)await chrome.scripting.unregisterContentScripts({ids:[id]});return;}
+  const script={id,matches:X_FOLLOWER_ORIGINS,js:['x-followers-parser.js','x-followers-content.js'],runAt:'document_idle',allFrames:false,persistAcrossSessions:true};
+  if(registered.length)await chrome.scripting.updateContentScripts([script]);else await chrome.scripting.registerContentScripts([script]);
+}
+async function acceptFollowerObservation(message,sender){
+  if(sender.id!==chrome.runtime.id||sender.frameId!==0||!Number.isInteger(sender.tab?.id)||profileResetting)return {ok:false};
+  let url;try{const page=new URL(sender.url);if(page.origin!=='https://x.com'||!/^\/[a-z0-9_]{1,15}\/?$/i.test(page.pathname))return {ok:false};url='https://x.com/'+page.pathname.replaceAll('/','').toLowerCase();}catch{return {ok:false};}
+  if(message.url!==url)return {ok:false};
+  const generation=followerGeneration,saved=await chrome.storage.local.get(['xFollowerSettings','xProfileCache']);
+  if(!saved.xFollowerSettings?.enabled||!await chrome.permissions.contains({origins:X_FOLLOWER_ORIGINS}))return {ok:false};
+  const cache=saved.xProfileCache||{},owners=new Set();
+  for(const entry of Object.values(cache)){const profile=readXCache(cache,entry?.accountId,entry?.userId);if(profile?.urls.includes(url))owners.add(profile.accountId);}
+  if(!owners.size||profileResetting||generation!==followerGeneration)return {ok:false};
+  const records=[...owners].map(accountId=>normalizeRecord('xFollowers',{accountId,url,followers:message.followers,approximate:message.approximate,source:'x-profile',observedAt:Date.now()}));
+  await mergeFollowers(records);void syncQuietly();return {ok:true};
+}
 async function command(message) {
   if(message.type==='X_PROFILE')return lookupXProfile(message);
+  if(message.type==='SAVE_X_FOLLOWERS'){
+    const enabled=message.enabled===true;
+    if(enabled&&!await chrome.permissions.contains({origins:X_FOLLOWER_ORIGINS}))throw Error('Xへの接続を許可してください。');
+    followerGeneration++;
+    await configureFollowerScript(enabled);
+    await chrome.storage.local.set({xFollowerSettings:{enabled}});return {ok:true};
+  }
   if (message.type === 'IMPORT_SETTINGS') {
     const current = await chrome.storage.local.get('cloudSync');
     const imported = resolveSettingsBackup(message.backup, current.cloudSync);
-    const origins = [...(imported.cloudSync.enabled ? CLOUD_ORIGINS : []), ...(imported.imageCacheSettings.enabled ? IMAGE_ORIGINS : [])];
+    const origins = [...(imported.cloudSync.enabled ? CLOUD_ORIGINS : []), ...(imported.imageCacheSettings.enabled ? IMAGE_ORIGINS : []),...(imported.xFollowerSettings?.enabled ? X_FOLLOWER_ORIGINS : [])];
     if (origins.length && !await chrome.permissions.contains({origins})) throw Error('設定の読み込みに必要な接続権限を許可してください。');
     await cloud.pause();
     try {
       await pause();
+      if(imported.xFollowerSettings){followerGeneration++;await configureFollowerScript(imported.xFollowerSettings.enabled);}
       if (imported.settings.contact) await ensureUA(imported.settings);
       else await chrome.declarativeNetRequest.updateDynamicRules({removeRuleIds:[1,2],addRules:[]});
       const saved = await chrome.storage.local.get(['cloudSync','cloudState']);
@@ -270,7 +306,7 @@ async function command(message) {
       const changed = next.endpoint !== old.endpoint || next.token !== old.token;
       const sameEndpoint = next.endpoint === old.endpoint;
       const serverRetryAt = sameEndpoint ? serverRetryDeadline(saved.cloudState) : 0;
-      await chrome.storage.local.set({settings:imported.settings,cloudSync:next,imageCacheSettings:imported.imageCacheSettings,
+      await chrome.storage.local.set({settings:imported.settings,cloudSync:next,imageCacheSettings:imported.imageCacheSettings,...(imported.xFollowerSettings?{xFollowerSettings:imported.xFollowerSettings}:{}),
         cloudState:{...(sameEndpoint ? saved.cloudState : {}),phase:next.enabled?'pending':'disabled',serverRetryAt,
           retryAt:Math.max(serverRetryAt,sameEndpoint ? saved.cloudState?.retryAt || 0 : 0),message:next.enabled?'設定を読み込みました。同期は有効です。':'設定を読み込みました。同期は無効です。'},
         ...(changed ? {cloudCheckpoint:{cursor:0,receipts:{}},cloudDiagnostic:{}} : {})});
@@ -338,10 +374,11 @@ async function command(message) {
     void run(); return { ok: true };
   }
   if (message.type === 'CLEAR') {
-    profileResetting=true;
+    profileResetting=true;followerGeneration++;
     try {
       await pause();
       await cloud.pause();
+      await followerWrites;
       const cloudSaved=await chrome.storage.local.get(['cloudSync','cloudState']),cloudConfig=cloudSaved.cloudSync || {},serverRetryAt=serverRetryDeadline(cloudSaved.cloudState);
       await chrome.storage.local.set({cloudSync:{...cloudConfig,enabled:false},cloudState:{phase:'disabled',serverRetryAt,retryAt:serverRetryAt,message:'ローカル記録の削除に伴い同期を停止しました。'},cloudDiagnostic:{},cloudCheckpoint:{cursor:0,receipts:{}}});
       await chrome.alarms.clear(CLOUD_ALARM);
@@ -350,7 +387,7 @@ async function command(message) {
       await chrome.alarms.clear(IMAGE_ALARM);
       const s = await state();
       // Clearing personal data must not clear server-imposed backoff or the rate-limit clock.
-      await chrome.storage.local.set({ accountMeta: {}, xProfileCache: {}, state: { phase: 'paused', message: '保存データを削除しました。', cooldownUntil: s.cooldownUntil || 0,
+      await chrome.storage.local.set({ accountMeta: {}, xProfileCache: {}, xFollowerCache:{}, state: { phase: 'paused', message: '保存データを削除しました。', cooldownUntil: s.cooldownUntil || 0,
         failures: s.failures || 0, lastRequestAt: s.lastRequestAt || 0, lastStartedAt: s.lastStartedAt || 0 } });
       return { ok: true };
     } finally { cloud.resume(); profileResetting=false; }
@@ -359,6 +396,9 @@ async function command(message) {
 }
 let commandQueue = Promise.resolve();
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if(message.type==='X_FOLLOWERS_OBSERVED'){
+    acceptFollowerObservation(message,sender).then(respond,()=>respond({ok:false}));return true;
+  }
   if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL(''))) return false;
   if (message.type === 'SYNC' || message.type === 'TEST_SYNC' || message.type === 'X_PROFILE') {
     command(message).then(respond, error => respond({ok:false,error:error.message}));
@@ -376,6 +416,8 @@ chrome.alarms.onAlarm.addListener(alarm => {
 });
 async function boot() {
   await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+  const followerSettings=(await chrome.storage.local.get('xFollowerSettings')).xFollowerSettings;
+  if(followerSettings?.enabled)await configureFollowerScript(await chrome.permissions.contains({origins:X_FOLLOWER_ORIGINS}));
   const config = await configuration();
   if ((await chrome.storage.local.get('cloudSync')).cloudSync?.enabled) {
     if (!await chrome.alarms.get(CLOUD_ALARM)) await chrome.alarms.create(CLOUD_ALARM,{periodInMinutes:5});

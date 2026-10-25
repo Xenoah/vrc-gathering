@@ -48,9 +48,10 @@ export function worldJourney(events, userId, { since = 0, limit = 200 } = {}) {
 }
 
 const compareText = (a,b) => String(a||'').localeCompare(String(b||''),'ja');
-export function sortFriends(rows, order, names = new Map()) {
+export function sortFriends(rows, order, names = new Map(), followers = new Map()) {
+  const followerOrder=(a,b,direction)=>{const x=followers.get(a.id),y=followers.get(b.id);return x==null?(y==null?0:1):y==null?-1:direction*(x-y);};
   const presence={online:0,active:1,unknown:2,offline:3};
-  const compare={name:(a,b)=>compareText(a.displayName,b.displayName),'name-desc':(a,b)=>compareText(b.displayName,a.displayName),
+  const compare={'followers-desc':(a,b)=>followerOrder(a,b,-1),'followers-asc':(a,b)=>followerOrder(a,b,1),name:(a,b)=>compareText(a.displayName,b.displayName),'name-desc':(a,b)=>compareText(b.displayName,a.displayName),
     latest:(a,b)=>b.observedAt-a.observedAt,oldest:(a,b)=>a.observedAt-b.observedAt,
     duration:(a,b)=>(a.stateFirstObservedAt||a.observedAt)-(b.stateFirstObservedAt||b.observedAt),
     world:(a,b)=>compareText(names.get(a.location?.worldId)||a.location?.worldId||a.location?.kind,names.get(b.location?.worldId)||b.location?.worldId||b.location?.kind),

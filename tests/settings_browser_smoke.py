@@ -28,7 +28,7 @@ try:
               const noop={addListener:()=>{}};
               window.fixture={values,commands:[],requests:[],allowPermissions:true,permissionRequests:[]};
               const storage={get:async keys=>structuredClone(Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,values[k]]))),set:async value=>{Object.assign(values,structuredClone(value));localStorage.setItem('test-storage',JSON.stringify(values));listeners.forEach(fn=>fn());},setAccessLevel:async()=>{}};
-              window.chrome={storage:{local:storage,onChanged:{addListener:fn=>listeners.push(fn)}},
+              window.chrome={scripting:{getRegisteredContentScripts:async()=>[],registerContentScripts:async()=>{},unregisterContentScripts:async()=>{}},storage:{local:storage,onChanged:{addListener:fn=>listeners.push(fn)}},
                 permissions:{contains:async({origins})=>origins.every(v=>allowed.has(v)),request:async({origins})=>{fixture.permissionRequests.push(origins);if(!fixture.allowPermissions)return false;origins.forEach(v=>allowed.add(v));return true;}},
                 alarms:{create:async()=>{},clear:async()=>{},get:async()=>null,onAlarm:noop},action:{setBadgeText:async()=>{},setBadgeBackgroundColor:async()=>{},onClicked:noop},
                 declarativeNetRequest:{updateDynamicRules:async()=>{}},tabs:{create:async()=>{}},

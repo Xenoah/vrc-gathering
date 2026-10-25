@@ -3,8 +3,8 @@ export const SYNC_PROTOCOL = 2;
 export const RECORD_SCHEMA = 2;
 export const SYNC_BATCH_SIZE = 100;
 export const LEGACY_SYNC_KINDS = ['friends', 'events', 'worlds', 'runs', 'accounts'];
-export const SYNC_KINDS = [...LEGACY_SYNC_KINDS, 'visits', 'encounters', 'profiles'];
-export const ARCHIVE_KINDS = ['profiles'];
+export const SYNC_KINDS = [...LEGACY_SYNC_KINDS, 'visits', 'encounters', 'profiles', 'xFollowers'];
+export const ARCHIVE_KINDS = ['profiles','xFollowers'];
 export function canonical(value) {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
   if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canonical(value[k])).join(',') + '}';
@@ -67,6 +67,10 @@ export function normalizeRecord(kind, input, now = Date.now()) {
       Object.assign(value,{userId:input.userId,visitStartedAt,relation:input.relation,otherInstanceId});
       key=input.userId+':'+startedAt;
     }
+  } else if(kind==='xFollowers') {
+    if(typeof input.url!=='string'||!/^https:\/\/x\.com\/[a-z0-9_]{1,15}$/.test(input.url)||
+      !Number.isSafeInteger(input.followers)||input.followers<0||typeof input.approximate!=='boolean'||input.source!=='x-profile')throw Error('SCHEMA');
+    value={accountId,observedAt,url:input.url,followers:input.followers,approximate:input.approximate,source:input.source};key=input.url.slice(14);
   } else if(kind==='profiles') {
     if(!id(input.userId)||!Array.isArray(input.urls)||input.urls.length>5)throw Error('SCHEMA');
     const reserved=['home','i','intent','share','search','explore','notifications','messages','settings','login','logout','signup','account','compose','hashtag','tos','privacy','about','download','jobs','ads','oauth','communities','lists','topics','spaces','help','support'];

@@ -13,7 +13,7 @@ export function createSettingsBackup(saved, includeToken = false, now = Date.now
   const cloud = saved.cloudSync || {};
   return validateSettingsBackup({ format:FORMAT, schema:1, appVersion:VERSION, exportedAt:new Date(now).toISOString(),
     settings:{ collection, sync:{enabled:cloud.enabled === true, endpoint:cloud.endpoint || '',
-      ...(includeToken ? {token:cloud.token || ''} : {})}, images:{enabled:saved.imageCacheSettings?.enabled === true} } });
+      ...(includeToken ? {token:cloud.token || ''} : {})}, images:{enabled:saved.imageCacheSettings?.enabled === true},xFollowers:{enabled:saved.xFollowerSettings?.enabled===true} } });
 }
 
 export function validateSettingsBackup(input) {
@@ -30,12 +30,14 @@ export function validateSettingsBackup(input) {
   if (typeof s.endpoint !== 'string' || s.endpoint.length > 2048) fail('GASのURL');
   const endpoint = syncSettings({endpoint:s.endpoint}).endpoint;
   if (s.enabled && !endpoint) fail('GASのURL');
+  const hasFollowers=Object.hasOwn(group,'xFollowers');
+  if(hasFollowers&&(!object(group.xFollowers)||typeof group.xFollowers.enabled!=='boolean'))fail('Xフォロワー数');
   const hasToken = Object.hasOwn(s, 'token');
   if (hasToken && s.token !== '' && !validToken(s.token)) fail('同期キー（32〜256文字の英数字・ハイフン・アンダースコア）');
   return { format:FORMAT, schema:1, appVersion:typeof input.appVersion === 'string' ? input.appVersion.slice(0,40) : '',
     exportedAt:typeof input.exportedAt === 'string' ? input.exportedAt.slice(0,40) : '',
     settings:{collection:{contact:c.contact,pollSeconds:c.pollSeconds,retentionDays:c.retentionDays,offlineRefreshMinutes:c.offlineRefreshMinutes},
-      sync:{enabled:s.enabled,endpoint,...(hasToken ? {token:s.token} : {})},images:{enabled:group.images.enabled}} };
+      sync:{enabled:s.enabled,endpoint,...(hasToken ? {token:s.token} : {})},images:{enabled:group.images.enabled},...(hasFollowers?{xFollowers:{enabled:group.xFollowers.enabled}}:{})} };
 }
 
 export function parseSettingsBackup(content) {
@@ -53,5 +55,5 @@ export function resolveSettingsBackup(input, currentSync = {}) {
   const token = hasToken ? sync.token : keepToken ? currentSync.token : '';
   const needsToken = !!sync.endpoint && !validToken(token);
   return { settings:{...collection,enabled:false}, cloudSync:syncSettings({...sync,token,enabled:sync.enabled && !needsToken}),
-    imageCacheSettings:{...images}, needsToken, tokenSource:hasToken && token ? 'file' : keepToken ? 'existing' : 'missing' };
+    imageCacheSettings:{...images},...(backup.settings.xFollowers?{xFollowerSettings:backup.settings.xFollowers}:{}), needsToken, tokenSource:hasToken && token ? 'file' : keepToken ? 'existing' : 'missing' };
 }

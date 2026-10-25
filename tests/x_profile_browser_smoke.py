@@ -59,11 +59,11 @@ try:
             page.locator('#detail').screenshot(path='/tmp/vrc-x-profile-mobile.png')
             page.evaluate("fixture.mode='empty';Object.values(fixture.values.xProfileCache).forEach(e=>e.checkedAt=Date.now()-61000)")
             page.locator('#detailXProfiles button').click()
-            expect(page.locator('#detailXProfiles .sub')).to_contain_text('見つかりませんでした',timeout=15000)
+            expect(page.locator('#detailXProfiles p.sub')).to_contain_text('見つかりませんでした',timeout=15000)
             expect(page.locator('#detailXProfiles a')).to_have_count(0)
             page.evaluate("fixture.mode='denied';Object.values(fixture.values.xProfileCache).forEach(e=>e.checkedAt=Date.now()-61000)")
             page.locator('#detailXProfiles button').click()
-            expect(page.locator('#detailXProfiles .sub')).to_contain_text('ログイン',timeout=15000)
+            expect(page.locator('#detailXProfiles p.sub')).to_contain_text('ログイン',timeout=15000)
             page.locator('#closeDetail').click()
             # Late responses must never replace the selected user's links.
             page.evaluate('''async()=>{
@@ -73,7 +73,47 @@ try:
                 view.show(holder,'owner','a');view.show(holder,'owner','b');await new Promise(r=>setTimeout(r,0));finish({ok:true,profile:{urls:['https://x.com/first'],checkedAt:1}});await new Promise(r=>setTimeout(r,0));
             }''')
             expect(page.locator('#raceProfile a')).to_have_count(1);expect(page.locator('#raceProfile a')).to_have_attribute('href','https://x.com/second')
+            page.evaluate("document.getElementById('raceProfile').remove()")
+            # Metric updates refresh the open dialog and the sortable roster without API calls.
+            page.evaluate("document.getElementById('detail').close()")
+            page.set_viewport_size({'width':1500,'height':1000})
+            page.evaluate('''async()=>{
+              const d=(await import('/demo.js')).demoData(),accountId=d.accountId,now=Date.now(),profiles={},metrics={};
+              d.friends.slice(0,4).forEach((f,i)=>{const url='https://x.com/count'+i;profiles[accountId+'/'+f.id]={accountId,userId:f.id,urls:[url],checkedAt:now};metrics['xFollowers:'+accountId+':count'+i]={accountId,url,observedAt:now,source:'x-profile',followers:[0,1234,12000,500][i],approximate:i===2};});
+              await chrome.storage.local.set({xProfileCache:profiles,xFollowerCache:metrics});
+            }''')
+            page.locator('#friendSort').select_option('followers-desc')
+            expect(page.locator('#friendsBody tr').first.locator('.follower-count')).to_contain_text('約12,000')
+            page.locator('#friendSort').select_option('followers-asc')
+            expect(page.locator('#friendsBody tr').first.locator('.follower-count')).to_have_text('0'+page.locator('#friendsBody tr').first.locator('.follower-count .sub').inner_text())
+            expect(page.locator('#friendsBody tr').last.locator('.follower-count')).to_have_text('未取得')
+            page.locator('#friendsBody tr').first.click()
+            expect(page.locator('#detailXProfiles .follower-count')).to_contain_text('フォロワー：0')
+            page.evaluate('''async()=>{const cache=structuredClone(fixture.values.xFollowerCache),v=Object.values(cache).find(v=>v.followers===0);v.followers=42;v.observedAt=Date.now();await chrome.storage.local.set({xFollowerCache:cache});}''')
+            expect(page.locator('#detailXProfiles .follower-count')).to_contain_text('フォロワー：42')
+            page.locator('#closeDetail').click()
+            colors=page.locator('#statusLegend .user-status').evaluate_all("nodes=>nodes.map(n=>getComputedStyle(n,'::before').backgroundColor)")
+            assert colors==['rgb(0, 176, 244)','rgb(43, 206, 10)','rgb(241, 138, 0)','rgb(224, 0, 50)','rgb(144, 144, 144)'],colors
+            assert page.locator('#friendsBody .status-offline').count()>0
+            page.screenshot(path='/tmp/vrc-v09-status-followers.png',full_page=True)
+            page.set_viewport_size({'width':390,'height':844});assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+            # Exercise the exact content scripts on a representative X profile header.
+            parser=context.new_page();parser.goto(base+'/');parser.evaluate("history.replaceState({},'', '/example')")
+            parser.set_content('<main data-testid="primaryColumn"><div data-testid="UserName"><span>@example</span></div><a href="/example/following"><span>99999</span><span>Following</span></a><a href="/example/verified_followers"><span title="12,345">12.3K</span><span>Followers</span></a><article><a href="/example/followers"><span>999</span>Followers</a></article></main>')
+            parser.evaluate("()=>{window.observations=[];chrome.runtime.sendMessage=async value=>{observations.push(value);return {ok:true};};}")
+            parser.add_script_tag(url=base+'/x-followers-parser.js');parser.add_script_tag(url=base+'/x-followers-content.js')
+            parser.wait_for_function('()=>observations.length===1')
+            assert parser.evaluate('observations[0].followers')==12345
+            assert parser.evaluate('observations[0].approximate') is False
+            parser.evaluate("document.querySelector('[title]').removeAttribute('title')")
+            parser.wait_for_function('()=>observations.length===2')
+            assert parser.evaluate('observations[1].followers')==12300 and parser.evaluate('observations[1].approximate') is True
+            parser.evaluate("document.querySelector('[data-testid=UserName] span').textContent='@someoneelse'")
+            assert parser.evaluate("VRCFollowerParser.read(document,location.pathname)") is None
+            parser.evaluate("document.querySelector('[data-testid=UserName] span').textContent='@example';document.querySelector('a[href$=verified_followers]').remove()")
+            assert parser.evaluate("VRCFollowerParser.read(document,location.pathname)") is None
+            parser.close()
             assert not errors,errors
-            print('PASS: actual worker/API-to-dialog links, new tab, local cache across reload, no presence refresh, removal, login errors, mobile and late response isolation')
+            print('PASS: actual worker/API-to-dialog links, new tab, local cache across reload, no presence refresh, removal, login errors, mobile, late response isolation, follower sorting/live updates, five status colors and exact/rounded X header parsing')
         finally:context.close()
 finally:server.shutdown();server.server_close()
