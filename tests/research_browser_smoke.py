@@ -47,17 +47,17 @@ try:
       const old=normalizeRecord('reports',{accountId:d.accountId,id:'archive_report01',title:'Archive',observedAt:Date.now()-90*86400000,since:Date.now()-92*86400000,until:Date.now()-91*86400000,summary:{}});
       await mergeArchiveRecords([old]);await prune(30);if(!(await exportAccount(d.accountId)).reports.some(r=>r.id===old.value.id))throw Error('archive cache lost');if((await exportSyncRecords()).some(r=>r.key===old.key))throw Error('archive cache reuploaded');
       await mergeSyncRecords([normalizeRecord('reports',{accountId:d.accountId,id:'report_current01',title:'Current report',observedAt:Date.now(),since:Date.now()-86400000,until:Date.now()-1000,summary:{quality:{samples:10,complete:8,partial:2,errors:0,coverage:.8},worlds:[{name:'Test world',peak:3}],pairs:[],followers:[]}})]);
-      sessionStorage.setItem('researchFixture',JSON.stringify({settings:{pollSeconds:180,retentionDays:30},accountMeta:{[d.accountId]:{displayName:'Research test'}},state:{accountId:d.accountId,phase:'paused'}}));
+      sessionStorage.setItem('researchFixture',JSON.stringify({settings:{pollSeconds:180,retentionDays:30},accountMeta:{[d.accountId]:{displayName:'Research test'},usr_accountsecond01:{displayName:'Second account'}},state:{accountId:d.accountId,phase:'paused'}}));
     }''')
     page.add_init_script('''{
       const stored=JSON.parse(sessionStorage.getItem('researchFixture')||'{}');
-      globalThis.chrome={storage:{local:{get:async keys=>{if(typeof keys==='string')keys=[keys];return Object.fromEntries((keys||Object.keys(stored)).map(k=>[k,stored[k]]));},set:async values=>Object.assign(stored,values)},onChanged:{addListener(){}}},permissions:{contains:async()=>false},runtime:{getURL:path=>'/'+path,sendMessage:async message=>{
+      globalThis.chrome={storage:{local:{get:async keys=>{if(typeof keys==='string')keys=[keys];return Object.fromEntries((keys||Object.keys(stored)).map(k=>[k,stored[k]]));},set:async values=>Object.assign(stored,values)},onChanged:{addListener(fn){globalThis.researchStorageChanged=fn;}}},permissions:{contains:async()=>false},runtime:{getURL:path=>'/'+path,sendMessage:async message=>{
         if(message.type==='SAVE_RESEARCH'){const {normalizeRecord}=await import('/sync-format.js'),{mergeSyncRecords}=await import('/db.js');const record=normalizeRecord(message.kind,{...message.value,id:message.value.id||'item_'+crypto.randomUUID().replaceAll('-',''),observedAt:Date.now()});await mergeSyncRecords([record]);return {ok:true,record};}
         return {ok:true,skipped:true,reason:'disabled'};
       }}};
     }''')
     page.goto(base+'/dashboard.html');page.locator('[data-tab=research]').click();expect(page.locator('#researchStatus')).to_contain_text('記録開始')
-    page.locator('[data-research-tool=events]').click();page.get_by_label('イベント名',exact=True).fill('<svg onload=alert(1)> Test');page.get_by_label('メモ',exact=True).fill('Persisted note');page.get_by_role('button',name='イベントを保存',exact=True).click()
+    page.locator('[data-research-tool=events]').click();page.get_by_label('イベント名',exact=True).fill('<svg onload=alert(1)> Test');page.get_by_label('メモ',exact=True).fill('Persisted note');page.evaluate("researchStorageChanged({state:{newValue:{phase:'running'}}},'local')");page.wait_for_timeout(600);expect(page.get_by_label('メモ',exact=True)).to_have_value('Persisted note');expect(page.get_by_label('メモ',exact=True)).to_be_focused();page.get_by_role('button',name='イベントを保存',exact=True).click()
     expect(page.locator('#researchEvent option')).to_have_count(2);page.locator('#researchEvent').select_option(index=1);expect(page.get_by_label('メモ',exact=True)).to_have_value('Persisted note');assert page.locator('#researchPanel svg[onload]').count()==0
     page.get_by_label('メモ',exact=True).fill('Updated note');page.get_by_role('button',name='変更を保存',exact=True).click();expect(page.get_by_label('メモ',exact=True)).to_have_value('Updated note')
     page.locator('[data-research-tool=reports]').click();page.get_by_label('条件名',exact=True).fill('Weekly connections');page.get_by_label('定期レポート',exact=True).select_option('weekly');page.get_by_role('button',name='現在の条件を保存',exact=True).click();expect(page.locator('#researchView option')).to_have_count(2)
@@ -67,6 +67,8 @@ try:
     assert json.loads(Path(downloaded.value.path()).read_text())['filters']['tool']=='events'
     page.reload();page.locator('[data-tab=research]').click();expect(page.locator('#researchStatus')).to_contain_text('記録開始');page.locator('[data-research-tool=events]').click();page.locator('#researchEvent').select_option(index=1);expect(page.get_by_label('メモ',exact=True)).to_have_value('Updated note')
     page.get_by_role('button',name='イベントを削除',exact=True).click();expect(page.locator('#researchEvent option')).to_have_count(1)
+    page.locator('[data-research-tool=replay]').click();page.locator('#researchReplay').fill('20');page.get_by_role('button',name='再生',exact=True).click();page.evaluate("researchStorageChanged({state:{newValue:{phase:'running'}}},'local')");page.wait_for_timeout(1800);expect(page.get_by_role('button',name='停止',exact=True)).to_be_visible();assert int(page.locator('#researchReplay').input_value())>=22;page.get_by_role('button',name='停止',exact=True).click()
+    page.locator('[data-research-tool=events]').click();page.get_by_label('イベント名',exact=True).fill('Account A draft');page.locator('#account').select_option('usr_accountsecond01');expect(page.get_by_label('イベント名',exact=True)).to_have_value('');page.locator('#account').select_option('usr_demoaccount0001');expect(page.get_by_label('イベント名',exact=True)).to_have_value('Account A draft')
     assert not errors,errors
     context.close();print('PASS research: 8 tools, replay, responsive layout, real IndexedDB compression storage, archive cache, persistent annotations and saved views')
 finally:server.shutdown()
