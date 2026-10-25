@@ -52,7 +52,7 @@ export const ACTIVITY_LABELS = {
 };
 
 export function buildActivityTimeline(friends, events, worlds, {
-  now = Date.now(), rangeMs = 86400000, query = '', filter = 'all', pollSeconds = 180, limit = 120
+  now = Date.now(), rangeMs = 86400000, query = '', filter = 'all', worldId = '', pollSeconds = 180, limit = 120
 } = {}) {
   const end = now, start = end - Math.max(60000, rangeMs);
   const worldNames = new Map(worlds.map(w => [w.id, w.name]));
@@ -100,6 +100,7 @@ export function buildActivityTimeline(friends, events, worlds, {
     }
     const active = points.length && points.some(p => classifyActivity(p.state) !== 'offline' && classifyActivity(p.state) !== 'removed');
     if (filter === 'active' && !active && !segments.some(s=>!['offline','removed','unknown'].includes(s.kind))) continue;
+    if (worldId && !segments.some(s=>s.worldId===worldId) && !points.some(p=>p.state.location?.worldId===worldId)) continue;
     if (filter === 'world' && !segments.some(s=>s.kind==='world') && !points.some(s=>classifyActivity(s.state)==='world')) continue;
     if (q && ![person.name,person.id,...segments.map(s=>worldNames.get(s.worldId)||s.worldId),
       ...points.map(p=>worldNames.get(p.state.location?.worldId)||'')].join(' ').toLocaleLowerCase().includes(q)) continue;
