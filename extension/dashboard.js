@@ -9,6 +9,7 @@ import { IMAGE_ORIGINS } from './image-cache.js';
 import { initializeGasGuide } from './setup-guide.js';
 import { initializeSettingsBackup } from './settings-backup-ui.js';
 import { createConnectionsView } from './connections-ui.js';
+import { createAnalysisLab } from './analysis-lab-ui.js';
 
 const $ = id => document.getElementById(id), isDemo = new URLSearchParams(location.search).get('demo') === '1';
 const dateFormat = new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
@@ -23,6 +24,7 @@ function node(tag, content, className) { const el = document.createElement(tag);
 const imageURLs=new Map(),imageElements=new Map();let currentGraph;
 const network=createNetworkView({viewport:$('networkViewport'),stage:$('networkStage'),canvas:$('networkCanvas'),zoomLabel:$('networkZoom'),onSelect:showNetworkDetail,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const connections=createConnectionsView({node,date,avatar,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
+const analysisLab=createAnalysisLab({node,date,download,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 function avatar(kind,id,name) {
   const url=imageURLs.get(kind+':'+id);
   if(!url)return node('span',[...name||'?'][0],'avatar');
@@ -32,7 +34,7 @@ async function loadImages() {
   const revision=selectedAccount+':'+JSON.stringify(imageRevision);if(revision===loadedImageRevision)return;
   for(const url of imageURLs.values())URL.revokeObjectURL(url);imageURLs.clear();imageElements.clear();
   imageRows=isDemo||!selectedAccount?[]:await cachedImages(selectedAccount);loadedImageRevision=revision;
-  for(const row of imageRows){if(!row.blob)continue;const key=row.kind+':'+row.id,url=URL.createObjectURL(row.blob);imageURLs.set(key,url);const img=new Image();img.onload=()=>{network.redraw();connections.redraw();};img.src=url;imageElements.set(key,img);}
+  for(const row of imageRows){if(!row.blob)continue;const key=row.kind+':'+row.id,url=URL.createObjectURL(row.blob);imageURLs.set(key,url);const img=new Image();img.onload=()=>{network.redraw();connections.redraw();analysisLab.redraw();};img.src=url;imageElements.set(key,img);}
 }
 function pill(label, cls = '') { return node('span', label, 'pill ' + cls); }
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(renderTimer); renderTimer = setTimeout(() => { $('toast').hidden = true; }, 6000); }
@@ -50,9 +52,10 @@ function showSyncSkip(response) {
 
 function tab(name) {
   for (const b of document.querySelectorAll('[data-tab]')) { b.classList.toggle('selected', b.dataset.tab === name); b.setAttribute('aria-current', b.dataset.tab === name ? 'page' : 'false'); }
-  for (const id of ['home','analytics','connections','friends','ranking','journey','history','settings','help']) $(id + 'Panel').hidden = id !== name;
+  for (const id of ['home','analytics','lab','connections','friends','ranking','journey','history','settings','help']) $(id + 'Panel').hidden = id !== name;
   if (name === 'analytics' && loaded) renderActivity();
   if (name === 'connections' && loaded) connections.update(data,selectedAccount,config);
+  if (name === 'lab' && loaded) analysisLab.update(data,selectedAccount,config);
 }
 const worldName = id => data.worlds.find(w => w.id === id)?.name || id;
 function place(f) { const l = f?.location; return l?.kind === 'world' ? worldName(l.worldId) : ({ private:'所在非公開', offline:'オフライン', traveling:'移動中', web:'ワールド情報なし', unknown:'所在不明' }[l?.kind] || '不明'); }
@@ -105,6 +108,7 @@ function render() {
   renderHome();
   renderActivity();
   connections.update(data,selectedAccount,config);
+  analysisLab.update(data,selectedAccount,config);
   renderCloud();
   const phases = { running:'取得中', ready:'収集中', paused:'停止中', waiting:'待機中', attention:'要確認' };
   $('phase').textContent = phases[state.phase] || '停止中'; $('phaseDot').className='status-dot ' + (state.phase || '');

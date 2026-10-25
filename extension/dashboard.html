@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="ja">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VRC Friends Observer</title><link rel="stylesheet" href="dashboard.css"><link rel="stylesheet" href="intelligence.css"><link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VRC Friends Observer</title><link rel="stylesheet" href="dashboard.css"><link rel="stylesheet" href="intelligence.css"><link rel="stylesheet" href="analysis-lab.css"><link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png"></head>
 <body>
-<header class="top"><div class="brand"><img class="brand-icon" src="icons/icon-128.png" width="48" height="48" alt=""><div><strong>VRC Friends Observer</strong><small>LOCAL FRIEND ACTIVITY · v0.5.0</small></div></div><div class="top-actions"><span id="demoFlag" class="pill" hidden>デモデータ</span><a href="https://vrchat.com/home" target="_blank" rel="noreferrer">VRChatを開く ↗</a></div></header>
+<header class="top"><div class="brand"><img class="brand-icon" src="icons/icon-128.png" width="48" height="48" alt=""><div><strong>VRC Friends Observer</strong><small>LOCAL FRIEND ACTIVITY · v0.6.0</small></div></div><div class="top-actions"><span id="demoFlag" class="pill" hidden>デモデータ</span><a href="https://vrchat.com/home" target="_blank" rel="noreferrer">VRChatを開く ↗</a></div></header>
 <main>
 <section class="hero"><div><div class="eyebrow">VRC GATHERING INTELLIGENCE</div><h1>観測から、活動の輪郭へ。</h1><p>最新状況、ユーザー別の時間軸、ワールド遷移をひとつの画面から探索。</p></div><div class="hero-actions"><button id="start" class="primary">収集を開始</button><button id="refresh">今すぐ更新</button></div></section>
 <div class="statusbar" role="status" aria-live="polite"><span id="phaseDot" class="status-dot"></span><strong id="phase">停止中</strong><span id="message">設定を保存し、収集を開始してください。</span><span id="nextRun" class="push"></span></div>
@@ -12,6 +12,7 @@
 <nav class="tabs" aria-label="表示切替">
   <button data-tab="home" class="selected">概要</button>
   <button data-tab="analytics">分析・タイムライン</button>
+  <button data-tab="lab">分析ラボ</button>
   <button data-tab="connections">自分・つながり</button>
   <button data-tab="journey">探索・遷移図</button>
   <button data-tab="friends">フレンド一覧</button>
@@ -58,6 +59,34 @@
     <div id="activityHourly" class="activity-hourly" role="img" aria-label="時間帯別の変更イベント観測件数"></div>
     <p class="activity-note">接続者数・在室率ではなく、変更イベントが記録された件数です。取得回数が少ない時間帯の件数も少なくなります。</p>
   </section>
+</section>
+
+<section id="labPanel" class="panel intelligence-panel" hidden>
+  <div class="intelligence-heading"><div><span class="eyebrow">OBSERVATION ANALYSIS LAB</span><h2>記録から、傾向を見つける。</h2><p>時間帯・ワールド・移動・自分の行動・つながりを横断して分析。表の見出しで並べ替え、CSV／JSONで集計結果を保存できます。</p></div><div class="lab-report-actions"><button id="labExportCSV" disabled>集計CSV</button><button id="labExportJSON" disabled>分析JSON</button></div></div>
+  <div class="lab-controls">
+    <label>期間 <select id="labRange"><option value="1">24時間</option><option value="7" selected>7日間</option><option value="30">30日間</option><option value="90">90日間</option><option value="365">365日間</option><option value="custom">日付を指定</option></select></label>
+    <div id="labCustomDates" class="lab-dates" hidden><label>開始日（JST）<input id="labStart" type="date"></label><label>終了日（JST・含む）<input id="labEnd" type="date"></label></div>
+    <label>フレンド <select id="labUser"><option value="">全フレンド</option></select></label>
+    <label>ワールド <select id="labWorld"><option value="">すべてのワールド</option></select></label>
+    <button id="labApply" class="primary">集計を更新</button>
+    <label>日別グラフ <select id="labDailyMetric"><option value="changes">変更件数</option><option value="users">観測ユーザー数</option><option value="moves">ワールド変更</option><option value="selfDuration">自分の推定時間</option><option value="companions">同席相手数</option></select></label>
+  </div>
+  <p class="activity-note">ユーザー指定はフレンド・同席の分析に適用します。自分の履歴は期間・ワールドで絞り込みます。収集診断はアカウント全体です。時間は観測点間の推定で、所在非公開や未観測期間の行動は補完しません。</p>
+  <p id="labError" class="lab-error" role="alert" hidden></p>
+  <div id="labResults">
+    <p id="labSummary" class="intelligence-summary" role="status"></p><div id="labKPIs" class="lab-kpis"></div>
+    <div class="lab-navigation"><div id="labCategories" class="lab-categories" aria-label="分析カテゴリ"></div><input id="labToolSearch" type="search" placeholder="分析ツールを探す" aria-label="分析ツールを検索"><span id="labToolCount"></span></div>
+    <p id="labNoTools" class="lab-no-tools" hidden>このカテゴリ・検索に一致する分析はありません。</p><div id="labCards" class="lab-cards"></div>
+  </div>
+  <div id="labParking" hidden>
+    <div id="labNetworkBlock">
+      <div class="lab-inline"><label>表示人数（観測ワールド数順）<select id="labGraphLimit"><option value="20">20人</option><option value="40" selected>40人</option><option value="80">80人</option></select></label><label>線を表示する共通数<select id="labGraphMinimum"><option value="1">1ワールド以上</option><option value="2">2ワールド以上</option><option value="3">3ワールド以上</option><option value="5">5ワールド以上</option></select></label></div>
+      <p id="labNetworkSummary" class="lab-detail"></p><div class="network-tools"><button id="labNetworkOut" aria-label="共通ワールド図を縮小">−</button><output id="labNetworkZoom">100%</output><button id="labNetworkIn" aria-label="共通ワールド図を拡大">＋</button><button id="labNetworkFit">全体表示</button><span>ドラッグ・スクロールで移動 · Ctrl＋ホイール／ピンチでズーム</span></div>
+      <div id="labNetworkViewport" class="network-viewport" tabindex="0" role="region" aria-label="共通ワールドのネットワーク"><div id="labNetworkStage" class="network-stage"><canvas id="labNetworkCanvas" aria-hidden="true"></canvas></div></div>
+      <p id="labNetworkSelection" class="lab-detail" aria-live="polite"></p>
+    </div>
+    <div id="labPairBlock"><div class="lab-inline"><label>ユーザーA<select id="labPairA"></select></label><label>ユーザーB<select id="labPairB"></select></label></div><p id="labPairSummary" class="lab-detail" aria-live="polite"></p></div>
+  </div>
 </section>
 
 <section id="connectionsPanel" class="panel intelligence-panel" hidden>
