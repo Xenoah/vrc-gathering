@@ -4,14 +4,15 @@ export function createNetworkView({viewport,stage,canvas,zoomLabel,onSelect,imag
   const context=canvas.getContext('2d'),base=document.createElement('canvas'),ink=base.getContext('2d');
   let graph={nodes:[],edges:[],width:600,height:600},nodes=new Map(),paths=[],radii=new Map(),scale=1,frame=0,selected='',viewKey='',pendingFit=true,dirty=true,lastFrame=0,visible=false;
   const reduced=matchMedia('(prefers-reduced-motion: reduce)');let motion=!reduced.matches,manualMotion=false;
+  let active=true;
   let pointers=new Map(),drag=null,pinch=null;
   const clamp=(n,a,b)=>Math.max(a,Math.min(b,n));
   const radius=n=>radii.get(n.id)||35;
-  const moving=()=>directional&&motion&&visible&&!document.hidden&&paths.some(p=>!p.edge.undirected);
-  function schedule(){if(!frame)frame=requestAnimationFrame(draw);}
+  const moving=()=>active&&directional&&motion&&visible&&!document.hidden&&paths.some(p=>!p.edge.undirected);
+  function schedule(){if(active&&!frame)frame=requestAnimationFrame(draw);}
   function requestDraw(){dirty=true;schedule();}
   const offset=()=>({x:Math.max(0,viewport.clientWidth-graph.width*scale)/2,y:Math.max(0,viewport.clientHeight-graph.height*scale)/2});
-  function dimensions(){stage.style.width=Math.max(viewport.clientWidth,graph.width*scale)+'px';stage.style.height=Math.max(viewport.clientHeight,graph.height*scale)+'px';zoomLabel.textContent=Math.round(scale*100)+'%';}
+  function dimensions(){if(!active)return;stage.style.width=Math.max(viewport.clientWidth,graph.width*scale)+'px';stage.style.height=Math.max(viewport.clientHeight,graph.height*scale)+'px';zoomLabel.textContent=Math.round(scale*100)+'%';}
   function resize(){if(!viewport.clientWidth)return;if(pendingFit){fit();return;}dimensions();requestDraw();}
   function zoom(next,x=viewport.clientWidth/2,y=viewport.clientHeight/2){const old=offset(),wx=(viewport.scrollLeft+x-old.x)/scale,wy=(viewport.scrollTop+y-old.y)/scale;scale=clamp(next,.005,3);dimensions();const nextOffset=offset();viewport.scrollLeft=wx*scale-x+nextOffset.x;viewport.scrollTop=wy*scale-y+nextOffset.y;requestDraw();}
   function fit(){if(!viewport.clientWidth){pendingFit=true;return;}pendingFit=false;scale=clamp(Math.min(viewport.clientWidth/graph.width,viewport.clientHeight/graph.height)*.94,.005,1.25);dimensions();viewport.scrollLeft=0;viewport.scrollTop=0;requestDraw();}
@@ -69,12 +70,12 @@ export function createNetworkView({viewport,stage,canvas,zoomLabel,onSelect,imag
   function release(e){if(!pointers.has(e.pointerId))return;const r=viewport.getBoundingClientRect();if(e.type==='pointerup'&&drag&&!drag.moved&&!pinch)hit(e.clientX-r.left,e.clientY-r.top);pointers.delete(e.pointerId);if(!pointers.size){drag=null;pinch=null;viewport.classList.remove('dragging');}}
   canvas.addEventListener('pointerup',release);canvas.addEventListener('pointercancel',release);
   viewport.addEventListener('keydown',e=>{if(e.key==='+'||e.key==='='){e.preventDefault();zoom(scale*1.3);}if(e.key==='-'){e.preventDefault();zoom(scale/1.3);}if(e.key==='Home'){e.preventDefault();fit();}});
-  function motionState(){if(motionButton){motionButton.textContent='光の流れ：'+(motion?'ON':'OFF');motionButton.setAttribute('aria-pressed',String(motion));}requestDraw();}
-  motionButton?.addEventListener('click',()=>{manualMotion=true;motion=!motion;motionState();});
+  function motionState(){if(active&&motionButton){motionButton.textContent='光の流れ：'+(motion?'ON':'OFF');motionButton.setAttribute('aria-pressed',String(motion));}requestDraw();}
+  motionButton?.addEventListener('click',()=>{if(!active)return;manualMotion=true;motion=!motion;motionState();});
   reduced.addEventListener('change',()=>{if(!manualMotion){motion=!reduced.matches;motionState();}});
   document.addEventListener('visibilitychange',requestDraw);
   new IntersectionObserver(entries=>{visible=entries[0].isIntersecting;requestDraw();}).observe(viewport);
   new ResizeObserver(resize).observe(viewport);motionState();
-  return {setGraph(next,key){graph=next;nodes=new Map(graph.nodes.map(n=>[n.id,n]));const maxCurrent=Math.max(0,...graph.nodes.map(n=>n.currentUsers?.size||0)),maxCount=Math.max(1,...graph.edges.map(e=>e.count));radii=new Map(graph.nodes.map(n=>[n.id,directional?worldRadius(n,maxCurrent):35]));paths=graph.edges.map(edge=>({edge,p:edgePoints(edge),color:directional?routeColor(edge.count,maxCount):'#5fa7b8'}));if(viewKey!==key){viewKey=key;selected='';pendingFit=true;onSelect?.(null);}if(pendingFit)fit();else{dimensions();requestDraw();}},fit,zoomBy:factor=>zoom(scale*factor),reset:()=>zoom(1),redraw:requestDraw,
-    focus(id){const edge=graph.edges.find(e=>e.id===id),n=nodes.get(id)||(edge?{x:(nodes.get(edge.from).x+nodes.get(edge.to).x)/2,y:(nodes.get(edge.from).y+nodes.get(edge.to).y)/2}:null);if(n){zoom(Math.max(scale,.8));const origin=offset();viewport.scrollLeft=n.x*scale+origin.x-viewport.clientWidth/2;viewport.scrollTop=n.y*scale+origin.y-viewport.clientHeight/2;}select(id);},get scale(){return scale;}};
+  return {setActive(value){active=value;if(!active){cancelAnimationFrame(frame);frame=0;}else{dimensions();motionState();requestDraw();}},setMotion(value){motion=value;motionState();},get motion(){return motion;},setGraph(next,key){graph=next;nodes=new Map(graph.nodes.map(n=>[n.id,n]));const maxCurrent=Math.max(0,...graph.nodes.map(n=>n.currentUsers?.size||0)),maxCount=Math.max(1,...graph.edges.map(e=>e.count));radii=new Map(graph.nodes.map(n=>[n.id,directional?worldRadius(n,maxCurrent):35]));paths=graph.edges.map(edge=>({edge,p:edgePoints(edge),color:directional?routeColor(edge.count,maxCount):'#5fa7b8'}));if(viewKey!==key){viewKey=key;selected='';pendingFit=true;onSelect?.(null);}if(pendingFit)fit();else{dimensions();requestDraw();}},fit,zoomBy:factor=>zoom(scale*factor),reset:()=>zoom(1),redraw:requestDraw,
+    focus(id){const edge=graph.edges.find(e=>e.id===id),n=nodes.get(id)||(edge?{x:(nodes.get(edge.from).x+nodes.get(edge.to).x)/2,y:(nodes.get(edge.from).y+nodes.get(edge.to).y)/2}:null);if(n){zoom(Math.max(scale,.8));const origin=offset();viewport.scrollLeft=n.x*scale+origin.x-viewport.clientWidth/2;viewport.scrollTop=n.y*scale+origin.y-viewport.clientHeight/2;}select(id);},select,get scale(){return scale;}};
 }

@@ -3,7 +3,7 @@ import { observedDurations, formatObservedDuration, buildActivityTimeline, chang
 import { exportAccount, cachedImages } from './db.js';
 import { demoData } from './demo.js';
 import { rankWorlds, worldJourney, worldNetwork, sortFriends, sortWorlds } from './insights.js';
-import { createNetworkView } from './network-view.js';
+import { createWorldNetworkView } from './world-network-view.js';
 import { CLOUD_ORIGINS, serverRetryDeadline } from './sync.js';
 import { IMAGE_ORIGINS } from './image-cache.js';
 import { initializeGasGuide } from './setup-guide.js';
@@ -31,7 +31,7 @@ const demo = isDemo ? demoData() : null;
 initializeNavigationIcons();
 function node(tag, content, className) { const el = document.createElement(tag); if (content != null) el.textContent = content; if (className) el.className = className; return el; }
 const imageURLs=new Map(),imageElements=new Map();let currentGraph;
-const network=createNetworkView({viewport:$('networkViewport'),stage:$('networkStage'),canvas:$('networkCanvas'),zoomLabel:$('networkZoom'),directional:true,wheelZoom:true,motionButton:$('networkMotion'),onSelect:showNetworkDetail,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
+const network=createWorldNetworkView({onSelect:showNetworkDetail,onLayoutChange:renderJourney,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const connections=createConnectionsView({node,date,avatar,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const analysisLab=createAnalysisLab({node,date,download,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const research=createResearchView({root:$('researchPanel'),isDemo,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
@@ -277,15 +277,15 @@ function renderInsights() {
 function renderJourney() {
   const days=Number($('journeyRange').value),userId=$('journeyUser').value;
   currentGraph=worldNetwork(data.journeyEvents||data.events,data.friends,data.worlds,{since:days?Date.now()-days*86400000:0,userId,query:$('networkSearch').value,order:$('networkSort').value,pollSeconds:config.pollSeconds});
-  network.setGraph(currentGraph,[selectedAccount,userId,days,$('networkSearch').value,$('networkSort').value].join('|'));
-  $('journeySummary').textContent=`${currentGraph.userCount} ユーザー / ${currentGraph.nodes.filter(n=>n.kind==='world').length} ワールド / ${currentGraph.edges.length} 経路 / ${currentGraph.transitionCount} 回の移動観測。${currentGraph.nodes.length?'中央から配置順に並べています。':'この条件の記録はありません。'}`;
+  network.setGraph(currentGraph,[selectedAccount,userId,days,$('networkSearch').value,$('networkSort').value].join('|'),data.worlds);
+  $('journeySummary').textContent=`${currentGraph.userCount} ユーザー / ${currentGraph.nodes.filter(n=>n.kind==='world').length} ワールド / ${currentGraph.edges.length} 経路 / ${currentGraph.transitionCount} 回の移動観測。${currentGraph.nodes.length?(network.mode==='radial'?'中央から配置順に並べています。':network.mode.toUpperCase()+'：選択した軸の値で配置しています。'):'この条件の記録はありません。'}`;
   const oldNode=$('networkNode').value,oldEdge=$('networkEdge').value;
   $('networkNode').replaceChildren(new Option('地点を選択',''),...currentGraph.nodes.map(n=>new Option(`${n.name} · ${n.users.size}人`,n.id)));
   const names=new Map(currentGraph.nodes.map(n=>[n.id,n.name]));
   $('networkEdge').replaceChildren(new Option('移動を選択',''),...currentGraph.edges.map(e=>new Option(`${names.get(e.from)} → ${names.get(e.to)} · ${e.count}回`,e.id)));
   if(currentGraph.nodes.some(n=>n.id===oldNode))$('networkNode').value=oldNode;
   if(currentGraph.edges.some(e=>e.id===oldEdge))$('networkEdge').value=oldEdge;
-  const selected=currentGraph.nodes.find(n=>n.id===$('networkNode').value)||currentGraph.edges.find(e=>e.id===$('networkEdge').value);if(selected)showNetworkDetail(selected);
+  const selected=currentGraph.nodes.find(n=>n.id===$('networkNode').value)||currentGraph.edges.find(e=>e.id===$('networkEdge').value);if(selected)network.select(selected.id);
   $('individualJourney').hidden=!userId;
   renderIndividualJourney();
 }
@@ -302,6 +302,7 @@ function showNetworkDetail(item) {
   }else{
     $('networkNode').value=item.id;$('networkEdge').value='';
     const heading=node('h3');heading.append(avatar('world',item.id,item.name),node('span',item.name));detail.append(heading,node('p',`${item.users.size}人を観測 · 現在の滞在 ${item.currentUsers.size}人 · 最新 ${date(item.observedAt)}`));
+    const axisValues=node('div',null,'network-axis-values');for(const description of network.axisDescription(item.id))axisValues.append(node('span',description));detail.append(axisValues);
     const users=node('div',null,'world-users');for(const id of item.users){const name=currentGraph.people.get(id)||id,button=node('button',name);button.addEventListener('click',()=>{$('journeyUser').value=id;renderJourney();});users.append(button);}detail.append(users);
   }
 }

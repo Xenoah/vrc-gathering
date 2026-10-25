@@ -3,7 +3,7 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VRC Friends Observer</title><link rel="stylesheet" href="dashboard.css"><link rel="stylesheet" href="intelligence.css"><link rel="stylesheet" href="analysis-lab.css"><link rel="stylesheet" href="workspace.css"><link rel="stylesheet" href="research.css"><link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png"></head>
 <body data-active-tab="home">
 <a class="skip-link" href="#mainContent">メインコンテンツへ</a>
-<header class="top"><div class="brand"><img class="brand-icon" src="icons/icon-128.png" width="48" height="48" alt=""><div><strong>VRC Friends Observer</strong><small>LOCAL FRIEND ACTIVITY · v0.11.0</small></div></div><div class="workspace-name">ACTIVITY WORKSPACE <span>JST</span></div><div class="top-actions"><button id="start" class="primary">収集を開始</button><button id="refresh">今すぐ更新</button><span id="demoFlag" class="pill" hidden>デモデータ</span><a href="https://vrchat.com/home" target="_blank" rel="noreferrer">VRChatを開く ↗</a></div></header>
+<header class="top"><div class="brand"><img class="brand-icon" src="icons/icon-128.png" width="48" height="48" alt=""><div><strong>VRC Friends Observer</strong><small>LOCAL FRIEND ACTIVITY · v0.12.0</small></div></div><div class="workspace-name">ACTIVITY WORKSPACE <span>JST</span></div><div class="top-actions"><button id="start" class="primary">収集を開始</button><button id="refresh">今すぐ更新</button><span id="demoFlag" class="pill" hidden>デモデータ</span><a href="https://vrchat.com/home" target="_blank" rel="noreferrer">VRChatを開く ↗</a></div></header>
 <main id="mainContent" tabindex="-1">
 <div class="workspace-status">
 <div class="statusbar" role="status" aria-live="polite"><span id="phaseDot" class="status-dot"></span><strong id="phase">停止中</strong><span id="message">設定を保存し、収集を開始してください。</span><span id="nextRun" class="push"></span></div>
@@ -138,13 +138,19 @@
     <label>配置順 <select id="networkSort"><option value="moves">移動回数順</option><option value="current">現在の滞在人数順</option><option value="users">観測ユーザー数順</option><option value="latest">最新観測順</option><option value="name">ワールド名順</option></select></label>
     <input id="networkSearch" type="search" placeholder="ワールド名・ユーザー名・IDで絞り込み" aria-label="ネットワーク検索">
   </div>
+  <div class="network-layout-controls">
+    <label>表示 <select id="networkMode"><option value="radial">円形（従来）</option><option value="2d">2D · 軸で比較</option><option value="3d">3D · 立体で探索</option></select></label>
+    <div id="networkAxes" hidden><label class="axis-x">X軸 <select id="networkAxisX"></select></label><label class="axis-y">Y軸 <select id="networkAxisY"></select></label><label id="networkZControl" class="axis-z">Z軸 <select id="networkAxisZ"></select></label><label>数値の目盛 <select id="networkScale"><option value="linear">等間隔</option><option value="log">対数（log1p）</option></select></label></div>
+  </div>
   <p id="journeySummary" class="insight-intro" role="status"></p>
-  <div class="network-tools"><button id="zoomOut" aria-label="縮小">−</button><output id="networkZoom" aria-label="拡大率">100%</output><button id="zoomIn" aria-label="拡大">＋</button><button id="fitNetwork">全体を表示</button><button id="resetNetwork">100%</button><button id="networkMotion" aria-pressed="true">光の流れ：ON</button><span>ドラッグで移動 · ホイール／ピンチでズーム</span></div>
+  <div class="network-tools"><button id="zoomOut" aria-label="縮小">−</button><output id="networkZoom" aria-label="拡大率">100%</output><button id="zoomIn" aria-label="拡大">＋</button><button id="fitNetwork">全体を表示</button><button id="resetNetwork">100%</button><button id="networkMotion" aria-pressed="true">光の流れ：ON</button><span id="networkControlsHelp">ドラッグで移動 · ホイール／ピンチでズーム</span></div>
   <div class="network-legend"><span><i class="network-popular"></i>大きさ＝現在滞在中のフレンド数</span><span><i class="network-frequency"></i>経路の観測：少ない → 多い</span><span><i class="network-private"></i>プライベート</span></div>
   <div id="networkViewport" class="network-viewport" tabindex="0" role="region" aria-label="全ユーザーのワールド遷移ネットワーク。矢印キーでスクロール、プラス・マイナスでズーム、Homeで全体表示。下の選択欄から詳細を確認できます。"><div id="networkStage" class="network-stage"><canvas id="networkCanvas" aria-hidden="true"></canvas></div></div>
+  <div id="spatialViewport" class="network-viewport network-spatial" tabindex="0" role="region" aria-label="軸で比較するワールド遷移ネットワーク" aria-describedby="networkControlsHelp networkAxisNote" hidden><canvas id="spatialCanvas" aria-hidden="true"></canvas></div>
+  <p id="networkAxisNote" class="footnote" hidden></p>
   <div class="network-inspector"><label>地点の詳細 <select id="networkNode"><option value="">地点を選択</option></select></label><label>移動の詳細 <select id="networkEdge"><option value="">移動を選択</option></select></label><div id="networkDetail" aria-live="polite">点または線を選ぶと、ユーザーと観測日時を表示します。</div></div>
   <details id="individualJourney"><summary>選択したユーザーを時系列で見る（最新200地点）</summary><div class="journey-scroll" tabindex="0" aria-label="観測順のワールド遷移図"><ol id="journeyFlow" class="journey-flow"></ol></div></details>
-  <p class="footnote">選択中のアカウントで記録した全ユーザーが対象です。点はワールド、矢印は観測順、線の太さは移動の観測回数です。自分に戻る線は同じワールド内のインスタンス変更を示します。プライベート・現実世界等は別の状態として表示します。「移動中」は省略し、前後に確認できた場所をつなぎます。光の点は観測順を示すアニメーションで、現在の移動を示すものではありません。配置や距離に地理的・時間的な意味はなく、正確な移動時刻・経路は確定できません。</p>
+  <p class="footnote">選択中のアカウントで記録した全ユーザーが対象です。点はワールド、矢印は観測順、線の太さは移動の観測回数です。自分に戻る線は同じワールド内のインスタンス変更を示します。プライベート・現実世界等は別の状態として表示します。「移動中」は省略し、前後に確認できた場所をつなぎます。光の点は観測順を示すアニメーションで、現在の移動を示すものではありません。円形の配置・距離に地理的な意味はありません。2D／3Dの位置は選択した軸の値で決まります。正確な移動時刻・経路は確定できません。</p>
 </section>
 <section id="historyPanel" class="panel" hidden><div class="toolbar"><h2>状態が変わったときの記録</h2><span class="muted push">直近200件 / 取得時点の差分</span><button id="exportEvents">履歴CSV</button></div><div id="historyList"></div><p class="footnote">時刻は観測時刻です。前回観測から今回観測までのどこかで変わった可能性があり、正確な移動時刻・滞在時間ではありません。</p></section>
 <section id="settingsPanel" class="panel padded" hidden>
