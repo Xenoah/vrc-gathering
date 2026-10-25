@@ -12,6 +12,7 @@ import { collectionSeries, stopSeries, updateSeries, compressRun } from './obser
 import { officialNote, noteChanges, noteChecks, NOTE_SCAN_INTERVAL, NOTE_CACHE_TTL } from './user-notes.js';
 import { reportSummary, scheduledBoundary, DAY } from './research-model.js';
 import {instanceRoster,reconcileInstancePresence,sameInstance} from './instance-presence.js';
+import {xConcurrency,validateXConcurrency} from './x-follower-settings.js';
 
 const updateAccounts = createAccountUpdater(chrome.storage.local);
 let collectorPromise,activeReports,noteGeneration=0;
@@ -69,6 +70,7 @@ const ALARM = 'vrc-observer-next', MAINTENANCE = 'vrc-observer-prune';
 const API = 'https://vrchat.com/api/1';
 let activeRun = null, controller = null, activeProfile = null, profileController = null, profileResetting = false;
 const followerQueue=createFollowerCollector({storage:chrome.storage.local,tabs:chrome.tabs,alarms:chrome.alarms,
+  concurrency:async()=>xConcurrency((await chrome.storage.local.get('xFollowerSettings')).xFollowerSettings?.concurrency),
   allowed:async()=>!profileResetting&&(await chrome.storage.local.get('xFollowerSettings')).xFollowerSettings?.enabled===true&&await chrome.permissions.contains({origins:X_FOLLOWER_ORIGINS}),
   latest:async jobs=>{
     const saved=await chrome.storage.local.get(['xFollowerCache','xProfileCache']),records=followerRecords(saved.xFollowerCache),values={};
@@ -427,12 +429,13 @@ async function command(message) {
   if(message.type==='PAUSE_X_FOLLOWERS')return followerQueue.pause();
   if(message.type==='RESUME_X_FOLLOWERS')return followerQueue.resume();
   if(message.type==='SAVE_X_FOLLOWERS'){
-    const enabled=message.enabled===true;
+    const enabled=message.enabled===true,previous=(await chrome.storage.local.get('xFollowerSettings')).xFollowerSettings||{};
+    const concurrency=message.concurrency===undefined?xConcurrency(previous.concurrency):validateXConcurrency(message.concurrency);
     if(enabled&&!await chrome.permissions.contains({origins:X_FOLLOWER_ORIGINS}))throw Error('Xへの接続を許可してください。');
-    followerGeneration++;
-    await chrome.storage.local.set({xFollowerSettings:{enabled}});
+    if(enabled!==previous.enabled)followerGeneration++;
+    await chrome.storage.local.set({xFollowerSettings:{enabled,concurrency}});
     if(!enabled)await followerQueue.pause();
-    await configureFollowerScript(enabled);return {ok:true};
+    await configureFollowerScript(enabled);if(enabled)void followerQueue.tick().catch(()=>{});return {ok:true,settings:{enabled,concurrency}};
   }
   if (message.type === 'IMPORT_SETTINGS') {
     const current = await chrome.storage.local.get('cloudSync');

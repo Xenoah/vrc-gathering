@@ -7,6 +7,13 @@ const saved={settings:{enabled:true,contact:'https://github.com/example',pollSec
   cloudSync:{enabled:true,endpoint,token},imageCacheSettings:{enabled:true},state:{cooldownUntil:1234},cloudCheckpoint:{cursor:500},
   cloudDiagnostic:{message:'Not a preference'},accountMeta:{user:'Private name'}};
 
+test('X concurrency is exported/restored, defaults to three for old files, and rejects values outside one to ten',()=>{
+  const backup=createSettingsBackup({...saved,xFollowerSettings:{enabled:true,concurrency:10}});assert.equal(resolveSettingsBackup(backup).xFollowerSettings.concurrency,10);
+  delete backup.settings.xFollowers.concurrency;assert.equal(resolveSettingsBackup(backup).xFollowerSettings.concurrency,3);
+  for(const value of [0,11,1.5,'5',null,true]){backup.settings.xFollowers.concurrency=value;assert.throws(()=>validate(backup));}
+  function validate(b){return parseSettingsBackup(JSON.stringify(b));}
+});
+
 test('settings exports round-trip preferences and exclude runtime state and secrets by default',()=>{
   const exported=createSettingsBackup(saved,false,0), text=JSON.stringify(exported);
   for(const excluded of [token,'cooldownUntil','cursor','Private name','Not a preference'])assert.ok(!text.includes(excluded));

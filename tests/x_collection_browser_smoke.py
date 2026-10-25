@@ -100,6 +100,47 @@ async def main():
     # A separately opened profile is collected but never closed by the queue.
     counts['missing']=999;manual=await context.new_page();await manual.goto('https://x.com/missing')
     await worker.wait_for_function("fixture.values.xFollowerCache['xFollowers:usr_demoaccount0001:missing'].followers===999");assert not manual.is_closed();await manual.close()
+    # Saved concurrency applies to bulk auto-enable, survives reload, and offers every value 1..10.
+    await worker.locator('[data-tab=settings]').click()
+    assert await worker.locator('#xFollowerConcurrency option').all_text_contents()==[str(i)+'件' for i in range(1,11)]
+    await worker.locator('#xFollowerConcurrency').select_option('10')
+    await worker.get_by_role('button',name='Xの設定を保存',exact=True).click()
+    await worker.wait_for_function('fixture.values.xFollowerSettings.concurrency===10')
+    offset=await worker.evaluate('fixture.offset');await worker.reload();await worker.evaluate('(n)=>fixture.offset=n',offset)
+    await worker.locator('[data-tab=settings]').click();await expect(worker.locator('#xFollowerConcurrency')).to_have_value('10')
+    await worker.screenshot(path='/tmp/vrc-x-settings-desktop.png',full_page=True)
+    await worker.set_viewport_size({'width':390,'height':844});assert await worker.evaluate('document.documentElement.scrollWidth<=innerWidth')
+    await worker.screenshot(path='/tmp/vrc-x-settings-mobile.png',full_page=True)
+    await worker.set_viewport_size({'width':1450,'height':1050})
+    # Thirty targets with three unreadable profiles must all be processed without a global pause.
+    original_profiles=await worker.evaluate('fixture.values.xProfileCache')
+    batch=['batch'+str(i).zfill(2) for i in range(24)];bad=set(batch[:3])
+    counts.update({name:i+1000 for i,name in enumerate(batch)});modes.update({name:'hold' for name in batch})
+    await worker.evaluate('''async names=>{const cache=structuredClone(fixture.values.xProfileCache);
+      Object.values(cache).forEach((entry,i)=>entry.urls.push(...names.slice(i*4,i*4+4).map(n=>'https://x.com/'+n)));
+      fixture.offset+=16000;await chrome.storage.local.set({xProfileCache:cache});}''',batch)
+    await worker.locator('[data-tab=friends]').click();await expect(worker.locator('#friendsPanel [data-x-queue]')).to_contain_text('対象 30件')
+    before=len(created);await worker.locator('#friendsPanel [data-x-collect]').click()
+    await worker.wait_for_function('fixture.values.xFollowerQueue.active.length===10 && fixture.values.xFollowerQueue.active.every(j=>j.tabId!=null)')
+    assert len(created)-before==10;await expect(worker.locator('#friendsPanel [data-x-queue]')).to_contain_text('同時取得 10/10件')
+    for name in batch[10:]:modes.pop(name,None)
+    for name in batch[3:10]:await release(name)
+    for _ in range(25):
+      await asyncio.sleep(1)
+      state=await worker.evaluate('fixture.values.xFollowerQueue')
+      assert not state['paused'],state
+      assert len(state['active'])<=10,state
+      if state['phase']=='complete':break
+      await next_job()
+    await worker.wait_for_function("fixture.values.xFollowerQueue.phase==='complete'")
+    state=await worker.evaluate('fixture.values.xFollowerQueue')
+    assert (state['total'],state['success'],state['failed'],state['retries'])==(30,27,3,3),state
+    assert not state['items'] and not state['active'];assert len(created)-before==33
+    await expect(worker.locator('#friendsPanel [data-x-queue]')).to_contain_text('残り 0件')
+    await worker.locator('#friendsPanel [data-x-errors] summary').click()
+    await expect(worker.locator('#friendsPanel [data-x-errors]')).to_contain_text('@batch00')
+    await worker.screenshot(path='/tmp/vrc-x-batch-complete.png',full_page=True)
+    await worker.evaluate('(cache)=>chrome.storage.local.set({xProfileCache:cache})',original_profiles)
     # Explicit page rate-limit notice pauses, preserving the previous value and pending jobs.
     modes['old']='limit';await worker.locator('#friendsPanel [data-x-collect]').click();await next_job();await next_job()
     await worker.wait_for_function("fixture.values.xFollowerQueue?.phase==='paused'")
@@ -111,6 +152,6 @@ async def main():
     await worker.set_viewport_size({'width':390,'height':844});assert await worker.evaluate('document.documentElement.scrollWidth<=innerWidth')
     await worker.screenshot(path='/tmp/vrc-x-collection-mobile.png',full_page=True)
     assert not errors,errors
-    await browser.close();print('PASS: three concurrent real tabs, missing-first refill, no repeated bulk jobs across refresh/restart, automatic and manual detail refresh, live counts, preserved manual tab, rate-limit pause, no APIs during bulk X collection, mobile')
+    await browser.close();print('PASS: three and ten concurrent real tabs, 30 targets completed despite three failures, bounded retries, missing-first refill, saved concurrency/reload/mobile, no repeated bulk jobs, detail refresh, preserved manual tab, rate-limit pause, no APIs during bulk X collection')
 try:asyncio.run(main())
 finally:server.shutdown()

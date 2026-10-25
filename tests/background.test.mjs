@@ -37,17 +37,18 @@ async function harness(handler, allowCloud = true){
   const format=new vm.SourceTextModule(await fs.readFile(new URL('sync-format.js',root),'utf8'),{context});await format.link(()=>{});
   const sync=new vm.SourceTextModule(await fs.readFile(new URL('sync.js',root),'utf8'),{context});await sync.link(()=>format);
   const images=new vm.SourceTextModule(await fs.readFile(new URL('image-cache.js',root),'utf8'),{context});await images.link(()=>{});
-  const backup=new vm.SourceTextModule(await fs.readFile(new URL('settings-backup.js',root),'utf8'),{context});await backup.link(spec=>spec==='./core.js'?core:sync);
+  const followerSettings=new vm.SourceTextModule(await fs.readFile(new URL('x-follower-settings.js',root),'utf8'),{context});await followerSettings.link(()=>{});
+  const backup=new vm.SourceTextModule(await fs.readFile(new URL('settings-backup.js',root),'utf8'),{context});await backup.link(spec=>spec==='./core.js'?core:spec==='./x-follower-settings.js'?followerSettings:sync);
   const connections=new vm.SourceTextModule(await fs.readFile(new URL('connections.js',root),'utf8'),{context});await connections.link(()=>{});
   const xProfiles=new vm.SourceTextModule(await fs.readFile(new URL('x-profile.js',root),'utf8'),{context});await xProfiles.link(()=>{});
   const followers=new vm.SourceTextModule(await fs.readFile(new URL('x-followers.js',root),'utf8'),{context});await followers.link(spec=>spec==='./sync-format.js'?format:xProfiles);
-  const followerQueue=new vm.SourceTextModule(await fs.readFile(new URL('x-follower-collector.js',root),'utf8'),{context});await followerQueue.link(spec=>spec==='./x-followers.js'?followers:xProfiles);
+  const followerQueue=new vm.SourceTextModule(await fs.readFile(new URL('x-follower-collector.js',root),'utf8'),{context});await followerQueue.link(spec=>spec==='./x-followers.js'?followers:spec==='./x-follower-settings.js'?followerSettings:xProfiles);
   const series=new vm.SourceTextModule(await fs.readFile(new URL('observation-series.js',root),'utf8'),{context});await series.link(()=>format);
   const research=new vm.SourceTextModule(await fs.readFile(new URL('research-model.js',root),'utf8'),{context});await research.link(spec=>spec==='./sync-format.js'?format:series);
   const instancePresence=new vm.SourceTextModule(await fs.readFile(new URL('instance-presence.js',root),'utf8'),{context});await instancePresence.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:series);
   const notes=new vm.SourceTextModule(await fs.readFile(new URL('user-notes.js',root),'utf8'),{context});await notes.link(()=>format);
   const bg=new vm.SourceTextModule(await fs.readFile(new URL('background.js',root),'utf8'),{context});
-  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:spec==='./x-followers.js'?followers:spec==='./x-follower-collector.js'?followerQueue:spec==='./observation-series.js'?series:spec==='./research-model.js'?research:spec==='./user-notes.js'?notes:spec==='./instance-presence.js'?instancePresence:db);await bg.evaluate();
+  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:spec==='./x-followers.js'?followers:spec==='./x-follower-collector.js'?followerQueue:spec==='./observation-series.js'?series:spec==='./research-model.js'?research:spec==='./user-notes.js'?notes:spec==='./instance-presence.js'?instancePresence:spec==='./x-follower-settings.js'?followerSettings:db);await bg.evaluate();
   async function flush(){for(let i=0;i<15;i++)await new Promise(setImmediate);}
   await flush();
   const command=message=>new Promise(resolve=>events.message(message,{id:'testextension',url:'chrome-extension://testextension/dashboard.html'},resolve));
@@ -348,6 +349,19 @@ test('bulk follower collection opens known X pages in priority order and single-
     h.advance(16000);h.events.alarm({name:'vrc-x-follower-queue'});await h.flush();assert.equal(h.store.xFollowerQueue.active[0].url,'https://x.com/oldcount');assert.equal(h.calls.length,calls);
     await h.command({type:'PAUSE_X_FOLLOWERS'});assert.equal(h.tabRows.size,0);assert.equal(h.store.xFollowerQueue.phase,'paused');
     await h.command({type:'CLEAR'});assert.equal(h.store.xFollowerQueue.items.length,0);assert.equal(h.store.xFollowerQueue.active.length,0);
+  }finally{h.stop();}
+});
+
+test('worker persists one-to-ten concurrency, keeps it on automatic enable, and rejects invalid settings without mutation',async()=>{
+  const h=await harness(good);try{
+    await h.start();const before=h.calls.length;
+    for(const value of [1,10,4]){const result=await h.command({type:'SAVE_X_FOLLOWERS',enabled:true,concurrency:value});assert.equal(result.ok,true);assert.equal(h.store.xFollowerSettings.concurrency,value);}
+    await h.command({type:'SAVE_X_FOLLOWERS',enabled:true});assert.equal(h.store.xFollowerSettings.concurrency,4);
+    for(const value of [0,11,2.5,'3',null])assert.equal((await h.command({type:'SAVE_X_FOLLOWERS',enabled:true,concurrency:value})).ok,false);
+    assert.equal(h.store.xFollowerSettings.concurrency,4);assert.equal(h.calls.length,before);
+    const now=h.store.accountMeta[uid].lastSuccessAt;h.store.xProfileCache={[uid+'/'+fid]:{accountId:uid,userId:fid,checkedAt:now,urls:['https://x.com/a','https://x.com/b','https://x.com/c','https://x.com/d','https://x.com/e']}};
+    await h.command({type:'COLLECT_X_FOLLOWERS',accountId:uid});assert.equal(h.store.xFollowerQueue.active.length,4);
+    await h.command({type:'SAVE_X_FOLLOWERS',enabled:false,concurrency:2});assert.equal(h.store.xFollowerQueue.phase,'paused');assert.equal(h.tabRows.size,0);assert.equal(h.store.xFollowerSettings.concurrency,2);
   }finally{h.stop();}
 });
 

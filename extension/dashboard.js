@@ -11,7 +11,8 @@ import { initializeSettingsBackup } from './settings-backup-ui.js';
 import { createConnectionsView } from './connections-ui.js';
 import { createResearchView } from './research-ui.js';
 import { createAnalysisLab } from './analysis-lab-ui.js';
-import { followerTargets, activeFollowerJobs, X_QUEUE_CONCURRENCY } from './x-follower-collector.js';
+import { followerTargets, activeFollowerJobs } from './x-follower-collector.js';
+import {xConcurrency,MAX_X_CONCURRENCY} from './x-follower-settings.js';
 import { X_FOLLOWER_ORIGINS, followerRecords, bestFollowerMetric, followerText } from './x-followers.js';
 import { createUserNotesView } from './user-notes-ui.js';
 import { createXProfileView } from './x-profile-ui.js';
@@ -406,7 +407,7 @@ async function load() {
   }
   if($('detail').open&&detailAccount!==selectedAccount)$('detail').close();
   await loadImages();
-  if(!xFollowerDirty)$('xFollowerEnabled').checked=xFollowerConfig.enabled===true;
+  if(!xFollowerDirty){$('xFollowerEnabled').checked=xFollowerConfig.enabled===true;$('xFollowerConcurrency').value=String(xConcurrency(xFollowerConfig.concurrency));}
   $('xFollowerStatus').textContent=`保存済みのXアカウント：${Object.values(xMetrics).filter(v=>v.accountId===selectedAccount).length}件 · ${xFollowerConfig.enabled?'取得は有効':'取得は無効'}（保存済みの数値は表示します）`;
   renderXCollection();xProfileView.refresh();userNotes.refresh(selectedAccount);gameLog.update(data,selectedAccount,logImportEpoch,instanceCollectionState);
   if(!imageDirty)$('imageEnabled').checked=imageConfig.enabled===true;
@@ -518,11 +519,12 @@ $('grantSyncPermissions').addEventListener('click',async()=>{
 if(!isDemo){chrome.permissions?.onAdded?.addListener(()=>void reload());chrome.permissions?.onRemoved?.addListener(()=>void reload());}
 
 $('xFollowerForm').addEventListener('input',()=>{xFollowerDirty=true;$('xFollowerNotice').textContent='未保存';});
+$('xFollowerConcurrency').replaceChildren(...Array.from({length:MAX_X_CONCURRENCY},(_,i)=>new Option((i+1)+'件',String(i+1))));
 $('xFollowerForm').addEventListener('submit',async event=>{
   event.preventDefault();if(isDemo){toast('デモ画面では設定を保存しません。');return;}
   try{const enabled=$('xFollowerEnabled').checked;
     if(enabled&&!await chrome.permissions.request({origins:X_FOLLOWER_ORIGINS}))throw Error('Xへの接続が許可されませんでした。');
-    await call({type:'SAVE_X_FOLLOWERS',enabled},{rethrow:true});xFollowerDirty=false;
+    await call({type:'SAVE_X_FOLLOWERS',enabled,concurrency:Number($('xFollowerConcurrency').value)},{rethrow:true});xFollowerDirty=false;
     $('xFollowerNotice').textContent=enabled?'保存しました。「全取得」またはユーザー詳細から取得できます。':'取得を無効にしました。';await reload();
   }catch(error){$('xFollowerNotice').textContent=error.message;}
 });
@@ -531,13 +533,14 @@ $('xFollowerForm').addEventListener('submit',async event=>{
 async function enableXFollowers(){
   if(isDemo)throw Error('デモではXを開きません。');
   if(!await chrome.permissions.request({origins:X_FOLLOWER_ORIGINS}))throw Error('Xへの接続が許可されませんでした。');
-  await call({type:'SAVE_X_FOLLOWERS',enabled:true},{rethrow:true});xFollowerConfig={enabled:true};xFollowerDirty=false;$('xFollowerEnabled').checked=true;
+  const result=await call({type:'SAVE_X_FOLLOWERS',enabled:true},{rethrow:true});xFollowerConfig=result.settings||{...xFollowerConfig,enabled:true};$('xFollowerEnabled').checked=true;
 }
 function renderXCollection(){
   const targets=followerTargets(xProfiles,xMetrics,selectedAccount,data.friends.filter(f=>f.isFriend).map(f=>f.id)),missing=targets.filter(t=>!t.observedAt).length,old=targets.filter(t=>t.observedAt&&Date.now()-t.observedAt>=86400000).length,q=xFollowerQueue;
   const active=activeFollowerJobs(q);
-  const progress=q.total?`取得キュー：${q.success||0}成功 / ${q.failed||0}未確認 / ${q.skipped||0}対象外 / 全${q.total}件 · 同時取得 ${active.length}/${X_QUEUE_CONCURRENCY}件${active.length?'（'+active.map(j=>'@'+j.url.slice(14)).join('・')+'）':''} · ${q.message||''}`:'取得を開始すると進捗を表示します。';
+  const progress=q.total?`取得キュー：${q.success||0}成功 / ${q.failed||0}未確認 / ${q.skipped||0}対象外 / 全${q.total}件 · 残り ${(q.items?.length||0)+active.length}件 · 再試行 ${q.retries||0}件 · 同時取得 ${active.length}/${xConcurrency(xFollowerConfig.concurrency)}件${active.length?'（'+active.map(j=>'@'+j.url.slice(14)).join('・')+'）':''} · ${q.message||''}`:'取得を開始すると進捗を表示します。';
   for(const n of document.querySelectorAll('[data-x-queue]'))n.textContent=`対象 ${targets.length}件（未取得 ${missing}件・24時間以上前 ${old}件） · ${progress}`;
+  for(const n of document.querySelectorAll('[data-x-errors]')){n.hidden=!q.errors?.length;n.replaceChildren(node('summary','未確認のプロフィール '+(q.errors?.length||0)+'件'),...((q.errors||[]).slice(0,30).map(e=>node('p',e.message))));if(q.errors?.length>30)n.append(node('p','ほか '+(q.errors.length-30)+'件'));}
   for(const b of document.querySelectorAll('[data-x-collect]'))b.disabled=isDemo||!targets.length||['running','waiting'].includes(q.phase);
   for(const b of document.querySelectorAll('[data-x-pause]'))b.disabled=isDemo||!active.length&&!q.items?.length||q.phase==='paused';
   for(const b of document.querySelectorAll('[data-x-resume]'))b.disabled=isDemo||!q.items?.length||q.phase!=='paused';
