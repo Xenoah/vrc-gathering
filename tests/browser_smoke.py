@@ -40,9 +40,15 @@ try:
             page.locator('#activityWorld').select_option('wrld_demoobservatory')
             expect(page.locator('#activityWorld')).to_have_value('wrld_demoobservatory')
             assert page.locator('#activityTimeline .activity-row').count() > 0
+            page.set_viewport_size({'width':390, 'height':844})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            page.locator('#activityTimeline').evaluate('(el)=>{el.scrollLeft=200;}')
+            assert page.locator('#activityTimeline').evaluate('(el)=>el.scrollLeft')==200
+            page.screenshot(path='/tmp/vrc-activity-timeline-mobile.png',full_page=True)
+            page.set_viewport_size({'width':1280,'height':900})
             page.locator('[data-tab=friends]').click()
             expect(page.locator('#friendsPanel')).to_be_visible()
-            expect(page.locator('#friendsBody th')).to_contain_text(['フレンド','最終観測状態','ワールド / インスタンス','種類 / 地域','観測上の継続','観測日時'])
+            expect(page.locator('#friendsPanel thead th')).to_contain_text(['フレンド','最終観測状態','ワールド / インスタンス','種類 / 地域','観測上の継続','観測日時'])
             assert page.locator('.brand-icon').evaluate('(img) => img.complete && img.naturalWidth === 128')
             page.locator('[data-tab=help]').click()
             page.locator('#helpPanel [data-open-gas-setup]').click()
@@ -79,6 +85,8 @@ try:
             page.locator('#zoomIn').click()
             expect(page.locator('#networkZoom')).to_have_text('196%')
             viewport = page.locator('#networkViewport')
+            # Zoom controls can scroll above the canvas; drag a visible point.
+            viewport.scroll_into_view_if_needed()
             box = viewport.bounding_box()
             viewport.evaluate('(el)=>{el.scrollLeft=200;el.scrollTop=200;}')
             before = viewport.evaluate('(el)=>[el.scrollLeft,el.scrollTop]')

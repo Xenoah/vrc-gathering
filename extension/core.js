@@ -3,7 +3,10 @@ export const ACTIVITY_NAMESPACE = 'vrc.activity';
 const validStart = (value, upper) => Number.isSafeInteger(value) && value > 0 && value <= upper;
 export function continuityMetadata(previous, current) {
   const time = current.observedAt;
-  const old = previous?.extensions?.[ACTIVITY_NAMESPACE] || {};
+  const meta = previous?.extensions?.[ACTIVITY_NAMESPACE];
+  // Legacy clients omit this namespace; mergeRecord preserves older extensions.
+  // Only reuse continuity recorded for the snapshot we actually received.
+  const old = meta?.observedAt === previous?.observedAt ? meta : {};
   const sameFriend = !!previous && previous.isFriend === current.isFriend;
   const samePresence = sameFriend && previous.presence === current.presence;
   const a = previous?.location || {}, b = current.location || {};
@@ -19,6 +22,7 @@ export function continuityMetadata(previous, current) {
     return Math.min(time, since);
   };
   return {
+    observedAt: time,
     presenceSince: prior('presenceSince', samePresence),
     placeSince: prior('placeSince', samePlace),
     instanceSince: prior('instanceSince', sameInstance)

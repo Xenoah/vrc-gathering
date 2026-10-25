@@ -17,7 +17,8 @@ export function formatObservedDuration(milliseconds) {
 
 export function observedDurations(friend) {
   if (!friend || friend.isFriend === false || !validStart(friend.observedAt, Number.MAX_SAFE_INTEGER)) return null;
-  const meta = friend.extensions?.[ACTIVITY_NAMESPACE] || {};
+  const candidate = friend.extensions?.[ACTIVITY_NAMESPACE];
+  const meta = candidate?.observedAt === friend.observedAt ? candidate : {};
   const observedAt = friend.observedAt;
   const start = key => validStart(meta[key], observedAt) ? meta[key] :
     validStart(friend.stateFirstObservedAt, observedAt) ? friend.stateFirstObservedAt : observedAt;
@@ -28,6 +29,7 @@ export function observedDurations(friend) {
     instance: elapsed('instanceSince'),
     since: start('presenceSince'),
     placeSince: start('placeSince'),
+    instanceSince: start('instanceSince'),
     observedAt,
     estimated: true
   };
@@ -98,13 +100,13 @@ export function buildActivityTimeline(friends, events, worlds, {
         previous.end=to;
       } else segments.push({start:from,end:to,kind,worldId,confidence});
     }
-    const active = points.length && points.some(p => classifyActivity(p.state) !== 'offline' && classifyActivity(p.state) !== 'removed');
+    const active = points.some(p => !['offline','removed','unknown'].includes(classifyActivity(p.state)));
     if (filter === 'active' && !active && !segments.some(s=>!['offline','removed','unknown'].includes(s.kind))) continue;
     if (worldId && !segments.some(s=>s.worldId===worldId) && !points.some(p=>p.state.location?.worldId===worldId)) continue;
     if (filter === 'world' && !segments.some(s=>s.kind==='world') && !points.some(s=>classifyActivity(s.state)==='world')) continue;
-    if (q && ![person.name,person.id,...segments.map(s=>worldNames.get(s.worldId)||s.worldId),
-      ...points.map(p=>worldNames.get(p.state.location?.worldId)||'')].join(' ').toLocaleLowerCase().includes(q)) continue;
     const friend = current.get(person.id);
+    if (q && ![friend?.displayName,person.name,person.id,...segments.map(s=>worldNames.get(s.worldId)||s.worldId),
+      ...points.map(p=>worldNames.get(p.state.location?.worldId)||'')].join(' ').toLocaleLowerCase().includes(q)) continue;
     rows.push({id:person.id,name:friend?.displayName || person.name,friend,points,segments,
       lastAt:sorted[sorted.length-1]?.at || 0,
       isOnline:friend?.presence === 'online' && friend?.isFriend &&

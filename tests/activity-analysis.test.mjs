@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { continuityMetadata, observedDurations, formatObservedDuration, classifyActivity,
   buildActivityTimeline, changesByHour } from '../extension/activity-analysis.js';
+import { reconcile } from '../extension/core.js';
+import { normalizeRecord, mergeRecord } from '../extension/sync-format.js';
 
 const wid='wrld_01234567-1111-2222-3333-012345678901';
 const wid2='wrld_11234567-1111-2222-3333-012345678901';
@@ -16,7 +18,7 @@ const extend=(prev,next)=>({...next,extensions:{'vrc.activity':continuityMetadat
 test('profile or status edits do not reset online/world continuity',()=>{
   const first=extend(null,state(1000));
   const changed=extend(first,{...first,observedAt:31000,status:'busy',stateFirstObservedAt:31000});
-  assert.deepEqual(changed.extensions['vrc.activity'],{presenceSince:1000,placeSince:1000,instanceSince:1000});
+  assert.deepEqual(changed.extensions['vrc.activity'],{observedAt:31000,presenceSince:1000,placeSince:1000,instanceSince:1000});
   const durations=observedDurations(changed);
   assert.equal(durations.presence,30000);
   assert.equal(durations.place,30000);
@@ -43,6 +45,28 @@ test('older records fall back conservatively without future or negative duration
   assert.equal(current.extensions['vrc.activity'].presenceSince,4000);
   assert.equal(observedDurations({...current,observedAt:1000}).presence,0);
   assert.equal(observedDurations({...current,isFriend:false}),null);
+});
+test('newer legacy snapshots cannot inherit continuity for an older world through sync',()=>{
+  const accountId='usr_account00000001', now=Date.now(), initial=state(now-7200000);
+  const first=reconcile([], [initial], accountId, initial.observedAt).records[0];
+  const legacy={...state(now-3600000,wid2),accountId,firstObservedAt:initial.observedAt};
+  const merged=mergeRecord(normalizeRecord('friends',legacy),normalizeRecord('friends',first)).value;
+  assert.equal(merged.extensions['vrc.activity'].observedAt,initial.observedAt);
+  assert.equal(observedDurations(merged).place,0);
+  assert.equal(observedDurations(merged).placeSince,legacy.observedAt);
+  const next=reconcile([merged],[state(now,wid2)],accountId,now).records[0];
+  assert.equal(observedDurations(next).placeSince,legacy.observedAt);
+  assert.equal(observedDurations(next).place,3600000);
+  // A newer observation from an upgraded device still keeps its valid origins.
+  const synced=mergeRecord(normalizeRecord('friends',next),normalizeRecord('friends',merged)).value;
+  assert.equal(observedDurations(synced).placeSince,legacy.observedAt);
+});
+test('exportable continuity origins use the same validated values as displayed durations',()=>{
+  const f={...state(5000),stateFirstObservedAt:4000,extensions:{'vrc.activity':{
+    observedAt:5000,presenceSince:1e100,placeSince:'not a timestamp',instanceSince:-20}}};
+  const d=observedDurations(f);
+  assert.equal(d.since,4000);assert.equal(d.placeSince,4000);assert.equal(d.instanceSince,4000);
+  assert.equal(d.presence,1000);assert.equal(d.place,1000);assert.equal(d.instance,1000);
 });
 test('timeline has t as time, users as rows, and never paints beyond last observation',()=>{
   const first=state(12000);
@@ -74,6 +98,17 @@ test('long gaps remain explicitly estimated and points are not extrapolated to n
     {now:2000000,rangeMs:2000000,pollSeconds:180});
   assert.equal(plot.rows[0].segments[0].confidence,'estimated');
   assert.equal(plot.rows[0].segments[0].end,1000000);
+});
+test('timeline search matches the current display name after a rename',()=>{
+  const old=state(10000),current={...state(20000),displayName:'Renamed'};
+  const events=[{userId:uid,displayName:old.displayName,observedAt:10000,current:old,kind:'first'}];
+  const model=buildActivityTimeline([current],events,[],{now:30000,query:'renamed'});
+  assert.equal(model.rows.length,1);assert.equal(model.rows[0].name,'Renamed');
+});
+test('unknown-only observations do not count as recorded activity',()=>{
+  const unknown={...state(10000),presence:'unknown',location:{kind:'unknown',worldId:'',instanceId:''}};
+  assert.equal(buildActivityTimeline([unknown],[],[],{now:20000,filter:'active'}).rows.length,0);
+  assert.equal(buildActivityTimeline([unknown],[],[],{now:20000,filter:'all'}).rows.length,1);
 });
 test('hour histogram counts changes and uses JST, not UTC and not first observations',()=>{
   const first=Date.UTC(2026,9,24,16,0); // 2026-10-25 01:00 JST

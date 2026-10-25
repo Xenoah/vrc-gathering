@@ -389,8 +389,8 @@ async function exportData(kind){
       const rows=[['account_id','user_id','display_name','is_friend','presence','status','status_description','platform','location_visibility','world_id','world_name','instance_id','instance_type','region','observed_at_utc','profile_observed_at_utc','first_observed_at_utc','state_first_observed_at_utc','presence_since_utc','world_since_utc','instance_since_utc','presence_observed_duration_ms','world_observed_duration_ms']];
       for(const f of saved.friends)rows.push([selectedAccount,f.id,f.displayName,f.isFriend,f.presence,f.status,f.statusDescription,f.platform,f.location.kind,f.location.worldId,names.get(f.location.worldId)||'',f.location.instanceId,f.location.access,f.location.region,iso(f.observedAt),iso(f.profileObservedAt),iso(f.firstObservedAt),iso(f.stateFirstObservedAt)]);
       for (let i=0;i<saved.friends.length;i++) {
-        const f=saved.friends[i], d=observedDurations(f), meta=f.extensions?.['vrc.activity'] || {};
-        rows[i+1].push(iso(meta.presenceSince),iso(meta.placeSince),iso(meta.instanceSince),d?.presence ?? '',d?.place ?? '');
+        const d=observedDurations(saved.friends[i]);
+        rows[i+1].push(iso(d?.since),iso(d?.placeSince),iso(d?.instanceSince),d?.presence ?? '',d?.place ?? '');
       }
       download(prefix+'.csv',csv(rows),'text/csv;charset=utf-8');
     }else{
