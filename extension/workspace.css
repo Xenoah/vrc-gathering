@@ -213,3 +213,5 @@ footer{margin-left:216px;color:#6d899b}
 
 .user-status{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:600;white-space:nowrap;color:#e2e8ed}.user-status::before{content:"";width:11px;height:11px;flex:none;border-radius:50%;background:var(--user-status-color,#909090)}.user-status.status-offline,.user-status.status-unknown{color:#a6a6a6}.status-legend{display:flex;flex-wrap:wrap;gap:12px 20px;padding:0 20px 16px}.status-legend .user-status{font-size:11px;color:var(--muted)}
 .follower-count{font-variant-numeric:tabular-nums;white-space:nowrap}.x-profile-links .x-profile-row{display:flex;flex-direction:column;gap:5px;margin-bottom:10px}.x-profile-row .sub{max-width:none;white-space:normal}
+
+.x-collection{padding:16px 20px;border-bottom:1px solid var(--border);font-size:12px}.x-collection-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.x-collection [data-x-queue]{color:var(--muted);line-height:1.7;overflow-wrap:anywhere}.x-collection small{color:var(--muted)}.x-profile-links+ p~button{margin-right:8px}

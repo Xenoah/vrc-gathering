@@ -58,12 +58,12 @@ try:
             page.set_viewport_size({'width':390,'height':844});assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
             page.locator('#detail').screenshot(path='/tmp/vrc-x-profile-mobile.png')
             page.evaluate("fixture.mode='empty';Object.values(fixture.values.xProfileCache).forEach(e=>e.checkedAt=Date.now()-61000)")
-            page.locator('#detailXProfiles button').click()
-            expect(page.locator('#detailXProfiles p.sub')).to_contain_text('見つかりませんでした',timeout=15000)
+            page.get_by_role('button',name='Xリンクを更新',exact=True).click()
+            expect(page.locator('#detailXProfiles .x-link-status')).to_contain_text('見つかりませんでした',timeout=15000)
             expect(page.locator('#detailXProfiles a')).to_have_count(0)
             page.evaluate("fixture.mode='denied';Object.values(fixture.values.xProfileCache).forEach(e=>e.checkedAt=Date.now()-61000)")
-            page.locator('#detailXProfiles button').click()
-            expect(page.locator('#detailXProfiles p.sub')).to_contain_text('ログイン',timeout=15000)
+            page.get_by_role('button',name='Xリンクを更新',exact=True).click()
+            expect(page.locator('#detailXProfiles .x-link-status')).to_contain_text('ログイン',timeout=15000)
             page.locator('#closeDetail').click()
             # Late responses must never replace the selected user's links.
             page.evaluate('''async()=>{

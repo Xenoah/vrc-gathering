@@ -17,11 +17,12 @@ async function harness(handler, allowCloud = true){
     get:async key=>{const keys=Array.isArray(key)?key:[key];return structuredClone(Object.fromEntries(keys.filter(k=>k in store).map(k=>[k,store[k]])));},
     set:async values=>Object.assign(store,structuredClone(values)),setAccessLevel:async()=>{}
   };
-  const scripts=new Map();
+  const scripts=new Map(),tabRows=new Map();let nextTabId=100;
+  const tabs={create:async opts=>{const tab={id:++nextTabId,status:'loading',...opts};tabRows.set(tab.id,tab);return tab;},get:async id=>{if(!tabRows.has(id))throw Error('closed');return {...tabRows.get(id)};},query:async()=>[...tabRows.values()],remove:async id=>{tabRows.delete(id);},sendMessage:async()=>({ok:true}),onUpdated:hook('tabUpdated'),onRemoved:hook('tabRemoved')};
   const chrome={scripting:{getRegisteredContentScripts:async()=>[...scripts.values()],registerContentScripts:async rows=>rows.forEach(r=>scripts.set(r.id,r)),updateContentScripts:async rows=>rows.forEach(r=>scripts.set(r.id,r)),unregisterContentScripts:async({ids})=>ids.forEach(id=>scripts.delete(id))},permissions:{contains:async()=>allowCloud},storage:{local:storage},alarms:{create:async(n,v)=>alarms.set(n,v),get:async n=>alarms.get(n),clear:async n=>alarms.delete(n),onAlarm:hook('alarm')},
     action:{setBadgeText:async()=>{},setBadgeBackgroundColor:async()=>{},onClicked:hook('click')},
     runtime:{id:'testextension',getURL:p=>'chrome-extension://testextension/'+p,onMessage:hook('message'),onInstalled:hook('installed'),onStartup:hook('startup')},
-    declarativeNetRequest:{updateDynamicRules:async v=>{saved.rules=v;}},tabs:{create:async()=>{}}};
+    declarativeNetRequest:{updateDynamicRules:async v=>{saved.rules=v;}},tabs};
   class Clock extends Date{constructor(...args){super(...(args.length?args:[now]));}static now(){return now;}}
   const context=vm.createContext({chrome,console,navigator:{userAgent:'TestChrome'},Date:Clock,Math,URL,crypto,TextEncoder,AbortController,AbortSignal,DOMException,
     setTimeout:(fn,ms)=>{now+=ms;queueMicrotask(fn);return 1;},clearTimeout:()=>{},
@@ -40,15 +41,16 @@ async function harness(handler, allowCloud = true){
   const connections=new vm.SourceTextModule(await fs.readFile(new URL('connections.js',root),'utf8'),{context});await connections.link(()=>{});
   const xProfiles=new vm.SourceTextModule(await fs.readFile(new URL('x-profile.js',root),'utf8'),{context});await xProfiles.link(()=>{});
   const followers=new vm.SourceTextModule(await fs.readFile(new URL('x-followers.js',root),'utf8'),{context});await followers.link(spec=>spec==='./sync-format.js'?format:xProfiles);
+  const followerQueue=new vm.SourceTextModule(await fs.readFile(new URL('x-follower-collector.js',root),'utf8'),{context});await followerQueue.link(spec=>spec==='./x-followers.js'?followers:xProfiles);
   const series=new vm.SourceTextModule(await fs.readFile(new URL('observation-series.js',root),'utf8'),{context});await series.link(()=>format);
   const research=new vm.SourceTextModule(await fs.readFile(new URL('research-model.js',root),'utf8'),{context});await research.link(spec=>spec==='./sync-format.js'?format:series);
   const bg=new vm.SourceTextModule(await fs.readFile(new URL('background.js',root),'utf8'),{context});
-  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:spec==='./x-followers.js'?followers:spec==='./observation-series.js'?series:spec==='./research-model.js'?research:db);await bg.evaluate();
+  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:spec==='./x-followers.js'?followers:spec==='./x-follower-collector.js'?followerQueue:spec==='./observation-series.js'?series:spec==='./research-model.js'?research:db);await bg.evaluate();
   async function flush(){for(let i=0;i<15;i++)await new Promise(setImmediate);}
   await flush();
   const command=message=>new Promise(resolve=>events.message(message,{id:'testextension',url:'chrome-extension://testextension/dashboard.html'},resolve));
   const start=async()=>{assert.equal((await command({type:'SAVE',settings:{contact:'https://github.com/example'}})).ok,true);await command({type:'START'});await flush();};
-  return {store,saved,calls,alarms,scripts,command,start,flush,advance:ms=>{now+=ms;},stop:()=>{closed=true;},events};
+  return {store,saved,calls,alarms,scripts,tabRows,command,start,flush,advance:ms=>{now+=ms;},stop:()=>{closed=true;},events};
 }
 const good=url=>({body:url.pathname.endsWith('/auth/user')?owner:url.pathname.endsWith('/friends')?(url.searchParams.get('offline')==='true'?[]:[online]):{id:wid,name:'架空ワールド',capacity:16,unityPackages:[{assetUrl:'SECRET_ASSET'}]}});
 
@@ -289,5 +291,22 @@ test('collection stores compact series, pause boundaries and scheduled reports w
     await h.events.alarm({name:'vrc-observer-reports'});await h.flush();const reports=h.saved.research.filter(r=>r.kind==='reports');assert.equal(reports.length,1);await h.events.alarm({name:'vrc-observer-reports'});await h.flush();assert.equal(h.saved.research.filter(r=>r.kind==='reports').length,1);
     assert.equal((await h.command({type:'RUN_REPORTS',accountId,viewId:view.record.value.id})).ok,true);assert.equal(h.saved.research.filter(r=>r.kind==='reports').length,2);assert.ok(h.saved.research.filter(r=>r.kind==='reports').some(r=>r.value.summary.quality.samples>=1));
     await h.command({type:'PAUSE'});assert.ok(h.saved.research.some(r=>r.kind==='coverage'&&r.value.outcome==='paused'));
+  }finally{h.stop();}
+});
+
+test('bulk follower collection opens known X pages in priority order and single-user refresh uses no X API',async()=>{
+  const h=await harness(good);try{
+    await h.start();const now=h.store.accountMeta[uid].lastSuccessAt;
+    h.store.xProfileCache={[uid+'/'+fid]:{accountId:uid,userId:fid,checkedAt:now,urls:['https://x.com/newcount','https://x.com/oldcount']}};
+    h.store.xFollowerCache={['xFollowers:'+uid+':oldcount']:{accountId:uid,url:'https://x.com/oldcount',followers:10,approximate:false,source:'x-profile',observedAt:now-86400000}};
+    assert.equal((await h.command({type:'COLLECT_X_FOLLOWERS',accountId:uid})).ok,false);
+    await h.command({type:'SAVE_X_FOLLOWERS',enabled:true});const calls=h.calls.length;
+    const batch=await h.command({type:'COLLECT_X_FOLLOWERS',accountId:uid});assert.equal(batch.ok,true);assert.equal(batch.added,2);assert.equal(h.store.xFollowerQueue.active.url,'https://x.com/newcount');
+    const id=h.store.xFollowerQueue.active.tabId,sender={id:'testextension',url:h.tabRows.get(id).url,frameId:0,tab:{id}};
+    const observed=await new Promise(resolve=>h.events.message({type:'X_FOLLOWERS_OBSERVED',url:'https://x.com/newcount',followers:123,approximate:false},sender,resolve));assert.equal(observed.ok,true);assert.equal(h.store.xFollowerQueue.success,1);assert.equal(h.tabRows.size,0);
+    assert.ok(h.saved.research.some(r=>r.kind==='followerHistory'&&r.value.followers===123));
+    h.advance(16000);h.events.alarm({name:'vrc-x-follower-queue'});await h.flush();assert.equal(h.store.xFollowerQueue.active.url,'https://x.com/oldcount');assert.equal(h.calls.length,calls);
+    await h.command({type:'PAUSE_X_FOLLOWERS'});assert.equal(h.tabRows.size,0);assert.equal(h.store.xFollowerQueue.phase,'paused');
+    await h.command({type:'CLEAR'});assert.equal(h.store.xFollowerQueue.items.length,0);assert.equal(h.store.xFollowerQueue.active,null);
   }finally{h.stop();}
 });

@@ -14,6 +14,11 @@ globalThis.VRCFollowerParser = Object.freeze({
     const reserved=['home','i','intent','share','search','explore','notifications','messages','settings','login','logout','signup','account','compose','hashtag','tos','privacy','about','download','jobs','ads','oauth','communities','lists','topics','spaces','help','support'];
     return match&&!reserved.includes(match[1].toLowerCase())?'https://x.com/'+match[1].toLowerCase():'';
   },
+  blocked(document,pathname){
+    if(/^\/(?:i\/flow\/login|login|account\/access)(?:[/?#]|$)/i.test(pathname))return 'login';
+    for(const error of document.querySelectorAll('[role="alert"],[data-testid="error-detail"]'))if(!error.closest('article,[data-testid="tweet"]')&&error.getClientRects().length&&/(rate limit|rate limited|利用制限に達|アクセス制限)/i.test(error.textContent))return 'rate-limit';
+    return '';
+  },
   read(document,pathname) {
     const url=this.profile(pathname);if(!url)return null;
     const handle=url.slice(14),area=document.querySelector('[data-testid="primaryColumn"]');if(!area)return null;

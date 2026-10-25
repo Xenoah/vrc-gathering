@@ -6,6 +6,7 @@ import { resolveSettingsBackup } from './settings-backup.js';
 import { reconcileConnections } from './connections.js';
 import { extractXProfiles, readXCache, writeXCache, X_CACHE_TTL } from './x-profile.js';
 import { normalizeRecord, mergeRecord } from './sync-format.js';
+import { createFollowerCollector, followerTargets, X_QUEUE_ALARM } from './x-follower-collector.js';
 import { X_FOLLOWER_ORIGINS, followerRecords, mergeFollowerCache } from './x-followers.js';
 import { collectionSeries, stopSeries, updateSeries, compressRun } from './observation-series.js';
 import { reportSummary, scheduledBoundary, DAY } from './research-model.js';
@@ -30,7 +31,7 @@ async function makeReports({accountId='',viewId='',force=false}={}){
     await chrome.storage.local.set({researchState:{lastReportAt:Date.now(),reportsSaved:saved,error:''}});if(saved)void syncQuietly();return {ok:true,saved};
   })().catch(async error=>{await chrome.storage.local.set({researchState:{error:error.message}});throw error;}).finally(()=>{activeReports=null;});return activeReports;
 }
-let profileWrites=Promise.resolve(),followerWrites=Promise.resolve(),followerGeneration=0;
+let profileWrites=Promise.resolve(),followerWrites=Promise.resolve(),followerObservations=Promise.resolve(),followerGeneration=0;
 function mergeFollowers(records){
   const work=followerWrites.then(async()=>{
     const saved=await chrome.storage.local.get('xFollowerCache');
@@ -65,6 +66,18 @@ const syncQuietly = () => runCloud().catch(() => {});
 const ALARM = 'vrc-observer-next', MAINTENANCE = 'vrc-observer-prune';
 const API = 'https://vrchat.com/api/1';
 let activeRun = null, controller = null, activeProfile = null, profileController = null, profileResetting = false;
+const followerQueue=createFollowerCollector({storage:chrome.storage.local,tabs:chrome.tabs,alarms:chrome.alarms,
+  allowed:async()=>!profileResetting&&(await chrome.storage.local.get('xFollowerSettings')).xFollowerSettings?.enabled===true&&await chrome.permissions.contains({origins:X_FOLLOWER_ORIGINS}),
+  isKnown:async url=>{const cache=(await chrome.storage.local.get('xProfileCache')).xProfileCache||{};return Object.values(cache).some(e=>readXCache(cache,e?.accountId,e?.userId)?.urls.includes(url));}});
+async function collectFollowers({accountId,userId,force=false}){
+  if(!USER_ID.test(accountId||'')||userId&&!USER_ID.test(userId))throw Error('対象ユーザーが不正です。');
+  const friends=await list('friends',accountId),saved=await chrome.storage.local.get(['xProfileCache','xFollowerCache']);
+  const ids=userId?friends.filter(f=>f.id===userId).map(f=>f.id):friends.filter(f=>f.isFriend).map(f=>f.id);
+  if(userId&&!ids.length)throw Error('記録済みのユーザーを選択してください。');
+  const all=followerTargets(saved.xProfileCache,saved.xFollowerCache,accountId,ids),targets=userId&&!force?all.filter(t=>Date.now()-t.observedAt>=60000):all;
+  if(!targets.length)return {ok:true,skipped:true,reason:all.length?'fresh':'no-links'};
+  return followerQueue.enqueue(targets,{single:!!userId});
+}
 const IMAGE_ALARM='vrc-observer-images';
 const imageCollector=createImageCollector({store:{list:async()=>{const accountId=(await state()).accountId;return accountId?cachedImages(accountId):[];},update:updateCachedImage,trim:trimImageCache},
   canRun:async()=>!activeRun && !activeProfile && !((await state()).cooldownUntil>Date.now()) && (await configuration()).enabled && (await chrome.storage.local.get('imageCacheSettings')).imageCacheSettings?.enabled===true,
@@ -305,7 +318,7 @@ async function acceptFollowerObservation(message,sender){
   if(!owners.size||profileResetting||generation!==followerGeneration)return {ok:false};
   const records=[...owners].map(accountId=>normalizeRecord('xFollowers',{accountId,url,followers:message.followers,approximate:message.approximate,source:'x-profile',observedAt:Date.now()}));
   for(const record of records){const v=record.value;await mergeSyncRecords(updateSeries(await activeSeries(v.accountId),[{kind:'followerHistory',at:v.observedAt,url:v.url,followers:v.followers,approximate:v.approximate}],{accountId:v.accountId,collectorId:await collector(),pollSeconds:180}));}
-  await mergeFollowers(records);void syncQuietly();return {ok:true};
+  await mergeFollowers(records);await followerQueue.observed(url,sender.tab.id);void syncQuietly();return {ok:true};
 }
 async function command(message) {
   if(message.type==='SAVE_RESEARCH'){
@@ -317,12 +330,16 @@ async function command(message) {
   if(message.type==='LOAD_ARCHIVE'){const result=await cloud.loadRange(message);if(result.skipped)throw Error('同期または設定変更中です。完了後に再試行してください。');return result;}
   if(message.type==='RUN_REPORTS')return makeReports({accountId:message.accountId,viewId:message.viewId,force:true});
   if(message.type==='X_PROFILE')return lookupXProfile(message);
+  if(message.type==='COLLECT_X_FOLLOWERS')return collectFollowers(message);
+  if(message.type==='PAUSE_X_FOLLOWERS')return followerQueue.pause();
+  if(message.type==='RESUME_X_FOLLOWERS')return followerQueue.resume();
   if(message.type==='SAVE_X_FOLLOWERS'){
     const enabled=message.enabled===true;
     if(enabled&&!await chrome.permissions.contains({origins:X_FOLLOWER_ORIGINS}))throw Error('Xへの接続を許可してください。');
     followerGeneration++;
-    await configureFollowerScript(enabled);
-    await chrome.storage.local.set({xFollowerSettings:{enabled}});return {ok:true};
+    await chrome.storage.local.set({xFollowerSettings:{enabled}});
+    if(!enabled)await followerQueue.pause();
+    await configureFollowerScript(enabled);return {ok:true};
   }
   if (message.type === 'IMPORT_SETTINGS') {
     const current = await chrome.storage.local.get('cloudSync');
@@ -332,7 +349,7 @@ async function command(message) {
     await cloud.pause();
     try {
       await pause();
-      if(imported.xFollowerSettings){followerGeneration++;await configureFollowerScript(imported.xFollowerSettings.enabled);}
+      if(imported.xFollowerSettings){followerGeneration++;await followerQueue.pause();await configureFollowerScript(imported.xFollowerSettings.enabled);}
       if (imported.settings.contact) await ensureUA(imported.settings);
       else await chrome.declarativeNetRequest.updateDynamicRules({removeRuleIds:[1,2],addRules:[]});
       const saved = await chrome.storage.local.get(['cloudSync','cloudState']);
@@ -410,8 +427,10 @@ async function command(message) {
   if (message.type === 'CLEAR') {
     profileResetting=true;followerGeneration++;
     try {
+      await followerQueue.clear();
       await pause();
       await cloud.pause();
+      await followerObservations.catch(()=>{});
       await followerWrites;
       if(activeReports)await activeReports.catch(()=>{});
       const cloudSaved=await chrome.storage.local.get(['cloudSync','cloudState']),cloudConfig=cloudSaved.cloudSync || {},serverRetryAt=serverRetryDeadline(cloudSaved.cloudState);
@@ -431,8 +450,12 @@ async function command(message) {
 }
 let commandQueue = Promise.resolve();
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if(message.type==='X_FOLLOWERS_BLOCKED'){
+    if(sender.id!==chrome.runtime.id||sender.frameId!==0||!Number.isInteger(sender.tab?.id)||!sender.url?.startsWith('https://x.com/')||!['login','rate-limit'].includes(message.reason))return false;
+    followerQueue.blocked(sender.tab.id,message.reason).then(()=>respond({ok:true}),()=>respond({ok:false}));return true;
+  }
   if(message.type==='X_FOLLOWERS_OBSERVED'){
-    acceptFollowerObservation(message,sender).then(respond,()=>respond({ok:false}));return true;
+    const generation=followerGeneration;const work=followerObservations.catch(()=>{}).then(()=>generation===followerGeneration?acceptFollowerObservation(message,sender):{ok:false});followerObservations=work;work.then(respond,()=>respond({ok:false}));return true;
   }
   if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL(''))) return false;
   if (message.type === 'SYNC' || message.type === 'TEST_SYNC' || message.type === 'X_PROFILE') {
@@ -442,8 +465,11 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   commandQueue = commandQueue.then(() => command(message)).then(respond, error => respond({ ok: false, error: error.message }));
   return true;
 });
+chrome.tabs.onUpdated?.addListener((id,change)=>{if(change.status==='complete'||change.url)void followerQueue.tabChanged(id).catch(()=>{});});
+chrome.tabs.onRemoved?.addListener(id=>{void followerQueue.tabChanged(id).catch(()=>{});});
 chrome.action.onClicked.addListener(() => { chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') }); });
 chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === X_QUEUE_ALARM) void followerQueue.tick().catch(()=>{});
   if (alarm.name === ALARM) void run();
   if (alarm.name === IMAGE_ALARM) void cacheImagesQuietly();
   if (alarm.name === CLOUD_ALARM) void syncQuietly();
@@ -454,6 +480,7 @@ async function boot() {
   await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
   const followerSettings=(await chrome.storage.local.get('xFollowerSettings')).xFollowerSettings;
   if(followerSettings?.enabled)await configureFollowerScript(await chrome.permissions.contains({origins:X_FOLLOWER_ORIGINS}));
+  void followerQueue.tick().catch(()=>{});
   const config = await configuration();
   await chrome.alarms.create('vrc-observer-reports',{periodInMinutes:60});
   void makeReports().catch(()=>{});
