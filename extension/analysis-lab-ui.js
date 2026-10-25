@@ -1,10 +1,12 @@
 import { buildAnalysisReport, sharedWorldGraph, comparePeople, analysisCSV, jstDay, DAY, WEEKDAYS } from './analysis-lab.js';
 import { formatObservedDuration } from './activity-analysis.js';
 import { createNetworkView } from './network-view.js';
+import { lineChart, barChart, donutChart, columnChart, comparisonChart, scatterChart } from './charts.js';
 
 export function createAnalysisLab({node,date,download,imageFor}) {
   const $=id=>document.getElementById(id);
   let data={},accountId='',config={},report=null,graphData=null,selectedPair=null,tools=[],category='overview',filterKey='',shown=new Map(),sorts=new Map();
+  const expanded=new Set(['firstEncounters','gaps','pair']);
   const duration=value=>value==null?'未確認':value===0?'0分':formatObservedDuration(Math.abs(value));
   const observedTime=value=>value>0?duration(value):'時間未確認';
   const signedTime=value=>(value<0?'−':value>0?'+':'')+duration(value);
@@ -116,27 +118,45 @@ export function createAnalysisLab({node,date,download,imageFor}) {
     if(rows.length>limit){const button=node('button',`さらに50件表示（${limit} / ${rows.length}件）`,'lab-more');button.addEventListener('click',()=>{shown.set(tool.id,limit+50);renderTable(holder,tool);});holder.append(button);}
   }
   function dailyChart(holder) {
-    const metric=$('labDailyMetric').value,max=Math.max(1,...report.daily.map(d=>d[metric])),chart=node('div',null,'lab-daily-chart');
-    for(const day of report.daily){const button=node('button',null,'lab-day'),value=metric==='selfDuration'?duration(day[metric]):number(day[metric]),bar=node('i');bar.style.height=Math.max(1,day[metric]/max*100)+'px';button.title=day.day+'：'+value;button.setAttribute('aria-label',day.day+'：'+value+'。この日に絞り込む');button.append(bar,node('span',day.day.slice(5)));button.addEventListener('click',()=>customRange(day.day));chart.append(button);}
-    holder.append(chart);
+    const metric=$('labDailyMetric').value;
+    lineChart(holder,report.daily,{label:'日別の観測傾向',series:[{key:metric,label:$('labDailyMetric').selectedOptions[0].textContent}],format:metric==='selfDuration'?duration:number,onSelect:day=>customRange(day.day),pointClass:'lab-day'});
+  }
+  function toolChart(holder,tool) {
+    const options={label:tool.title};
+    if(tool.id==='daily'){dailyChart(holder);return;}
+    if(tool.id==='comparison'){comparisonChart(holder,tool.rows,{...options,format:(v,r)=>r.id==='selfDuration'?duration(v):number(v)});return;}
+    if(tool.id==='explorers'){scatterChart(holder,tool.rows,{...options,onSelect:row=>{$('labUser').value=row.id;calculate();}});return;}
+    if(['hourly','weekdays'].includes(tool.id)){columnChart(holder,tool.rows,options);return;}
+    if(['states','platforms','regions','access','freshness','cohorts','company'].includes(tool.id)){donutChart(holder,tool.rows,{...options,...(tool.id==='company'?{key:'duration',format:duration,unit:'推定時間'}:{})});return;}
+    const keys={worlds:'users',currentWorlds:'users',worldGrowth:'delta',routes:'count',roundTrips:'count',selfWorlds:'duration',dwell:'count',connections:'duration',connectionChanges:'delta',connectionWorlds:'users',groups:'count',changeFields:'count'};
+    if(keys[tool.id])barChart(holder,tool.id==='roundTrips'?tool.rows.map(row=>({...row,name:row.name+' · '+row.route})):tool.rows,{...options,key:keys[tool.id],signed:keys[tool.id]==='delta',format:keys[tool.id]==='duration'?observedTime:number});
+    if(tool.id==='dwellStats'||tool.id==='coverage'){
+      const list=node('div',null,'chart-facts');for(const row of tool.rows){const item=node('div');item.append(node('span',row.name),node('strong',String(valueOf(tool.columns[1],row))));list.append(item);}holder.append(list);
+    }
   }
   function heatmap(holder) {
     const grid=node('div',null,'lab-heatmap'),max=Math.max(1,...report.heatmap.map(d=>d.changes));grid.setAttribute('role','table');grid.setAttribute('aria-label','曜日別・時間帯別の変更件数');
     grid.append(node('span','JST'));for(let h=0;h<24;h++)grid.append(node('span',String(h)));
-    for(let d=0;d<7;d++){grid.append(node('strong',WEEKDAYS[d]));for(let h=0;h<24;h++){const cell=report.heatmap[d*24+h],button=node('button',String(cell.changes),'lab-heat');button.style.backgroundColor=`rgba(24,128,110,${.06+.78*cell.changes/max})`;button.style.color=cell.changes/max>.6?'white':'#28534c';button.title=WEEKDAYS[d]+'曜日 '+h+'時：'+cell.changes+'変更 / '+cell.users+'ユーザー';button.setAttribute('aria-label',button.title);button.addEventListener('click',()=>{$('labHeatDetail').textContent=button.title+' / '+cell.observations+'観測点';});grid.append(button);}}
+    for(let d=0;d<7;d++){grid.append(node('strong',WEEKDAYS[d]));for(let h=0;h<24;h++){const cell=report.heatmap[d*24+h],button=node('button',String(cell.changes),'lab-heat');button.style.backgroundColor=`color-mix(in srgb, var(--chart-cyan) ${Math.round(cell.changes/max*85)}%, var(--chart-track))`;button.style.color=cell.changes/max>.5?'#061e25':'var(--muted)';button.title=WEEKDAYS[d]+'曜日 '+h+'時：'+cell.changes+'変更 / '+cell.users+'ユーザー';button.setAttribute('aria-label',button.title);button.addEventListener('click',()=>{$('labHeatDetail').textContent=button.title+' / '+cell.observations+'観測点';});grid.append(button);}}
     holder.append(grid,node('p','セルを選ぶと件数を表示します。','lab-detail'));holder.lastChild.id='labHeatDetail';
   }
   function renderCards() {
-    const holder=$('labCards');holder.replaceChildren();
+    const holder=$('labCards');
+    // Read the live state before replacing cards; details.toggle can be delivered after a refresh.
+    for(const card of holder.children){const details=card.querySelector('.lab-data');if(details?.open)expanded.add(card.dataset.tool);else expanded.delete(card.dataset.tool);}
+    holder.replaceChildren();
     for(const tool of tools) {
       const card=node('section',null,'lab-card');card.dataset.tool=tool.id;card.dataset.category=tool.category;card.dataset.search=tool.title+' '+tool.note;
       const heading=node('div',null,'lab-card-heading'),text=node('div'),csv=node('button','CSV');text.append(node('span',categories[tool.category],'eyebrow'),node('h3',tool.title));heading.append(text,csv);csv.addEventListener('click',()=>exportTable(tool));
       card.append(heading,node('p',tool.note,'lab-note'));
-      if(tool.id==='daily')dailyChart(card);
+      toolChart(card,tool);
       if(tool.id==='heatmap'){const overflow=node('div',null,'lab-scroll');heatmap(overflow);card.append(overflow);}
       if(tool.id==='network') {const block=$('labNetworkBlock');block.hidden=false;card.append(block);}
       if(tool.id==='pair'){const block=$('labPairBlock');block.hidden=false;card.append(block);}
-      const table=node('div');table.id='labTable-'+tool.id;renderTable(table,tool);card.append(table);holder.append(card);
+      const table=node('div');table.id='labTable-'+tool.id;renderTable(table,tool);
+      const details=node('details',null,'lab-data'),summary=node('summary','データを表示 · '+tool.rows.length+'件');
+      details.open=expanded.has(tool.id);
+      details.append(summary,table);card.append(details);holder.append(card);
     }
     applyVisibility();
   }
@@ -145,7 +165,7 @@ export function createAnalysisLab({node,date,download,imageFor}) {
     selectedPair=comparePeople(report.people,$('labPairA').value,$('labPairB').value,new Map(Object.entries(report.worldNames)));
     $('labPairSummary').textContent=selectedPair?`${selectedPair.first} × ${selectedPair.second}：共通 ${selectedPair.shared.length}ワールド · 類似度 ${percent(selectedPair.similarity)} · 共通の観測時間帯 ${selectedPair.sharedHours.map(h=>h+'時').join('、')||'なし'}（同じ日・時刻とは限りません）`:'異なる2人を選択してください。';
     $('labNetworkSelection').textContent=selectedPair?`${selectedPair.first} × ${selectedPair.second}：${selectedPair.shared.map(w=>w.name).join(' / ')||'共通ワールドなし'}`:'図の点・線を選ぶと共通ワールドを表示します。';
-    const tool=tools.find(t=>t.id==='pair');if(tool){tool.rows=selectedPair?.shared||[];const holder=$('labTable-pair');if(holder)renderTable(holder,tool);}
+    const tool=tools.find(t=>t.id==='pair');if(tool){tool.rows=selectedPair?.shared||[];const holder=$('labTable-pair');if(holder){renderTable(holder,tool);holder.previousElementSibling.textContent='データを表示 · '+tool.rows.length+'件';}}
   }
   function applyVisibility() {
     const query=$('labToolSearch').value.trim().toLocaleLowerCase();let count=0;
@@ -181,5 +201,6 @@ export function createAnalysisLab({node,date,download,imageFor}) {
     ...Object.entries({accountId:report.accountId,since:new Date(report.range.since).toISOString(),until:new Date(report.range.until).toISOString(),timezone:report.timezone,userId:report.filters.userId,worldId:report.filters.worldId,networkLimit:graphData.limit,networkMinimum:graphData.minShared}).map(([key,value])=>['集計条件','',key,value]),
     ...tools.flatMap(t=>t.rows.flatMap((row,i)=>t.columns.map(c=>[t.title,i+1,c.label,valueOf(c,row)])))]),'text/csv;charset=utf-8');});
   $('labStart').value=jstDay(Date.now()-6*DAY);$('labEnd').value=jstDay(Date.now());
-  return {update(next,account,settings){const changed=accountId!==account;data=next;accountId=account;config=settings;if(changed){$('labUser').value='';$('labWorld').value='';}if(!$('labPanel').hidden){updateChoices();calculate();}},redraw:()=>graph.redraw()};
+  return {update(next,account,settings){const changed=accountId!==account;data=next;accountId=account;config=settings;if(changed){$('labUser').value='';$('labWorld').value='';}if(!$('labPanel').hidden){updateChoices();calculate();}},
+    explore({day,worldId,userId,section='overview'}={}){category=section;$('labToolSearch').value='';$('labUser').value=userId||'';$('labWorld').value=worldId||'';if(day)customRange(day);else{$('labRange').value='7';$('labCustomDates').hidden=true;calculate();}},redraw:()=>graph.redraw()};
 }

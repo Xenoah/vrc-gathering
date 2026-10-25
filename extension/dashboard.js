@@ -11,6 +11,9 @@ import { initializeSettingsBackup } from './settings-backup-ui.js';
 import { createConnectionsView } from './connections-ui.js';
 import { createAnalysisLab } from './analysis-lab-ui.js';
 import { createXProfileView } from './x-profile-ui.js';
+import { buildAnalysisReport, DAY } from './analysis-lab.js';
+import { lineChart, barChart, donutChart, columnChart } from './charts.js';
+import { initializeNavigationIcons } from './navigation-icons.js';
 
 const $ = id => document.getElementById(id), isDemo = new URLSearchParams(location.search).get('demo') === '1';
 const dateFormat = new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
@@ -21,6 +24,7 @@ const statusNames = { active:'オンライン', 'join me':'Join Me', 'ask me':'A
 const accessNames = { public:'Public', friends:'Friends', 'friends-plus':'Friends+', invite:'Invite', 'invite-plus':'Invite+', 'group-public':'Group Public', 'group-plus':'Group+', 'group-members':'Group', 'group-unknown':'Group', unknown:'不明' };
 let data = { friends:[], events:[], worlds:[] }, config = { ...DEFAULTS }, state = {}, selectedAccount = '', dirty = false, renderTimer, loaded = false, cloudConfig = {}, cloudState = {}, cloudDiagnostic = {}, syncPermissions = [], testingConnection = false, syncDirty = false, imageDirty = false, imageConfig = {}, imageRows = [], imageRevision = null, loadedImageRevision;
 const demo = isDemo ? demoData() : null;
+initializeNavigationIcons();
 function node(tag, content, className) { const el = document.createElement(tag); if (content != null) el.textContent = content; if (className) el.className = className; return el; }
 const imageURLs=new Map(),imageElements=new Map();let currentGraph;
 const network=createNetworkView({viewport:$('networkViewport'),stage:$('networkStage'),canvas:$('networkCanvas'),zoomLabel:$('networkZoom'),onSelect:showNetworkDetail,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
@@ -53,11 +57,15 @@ function showSyncSkip(response) {
 }
 
 function tab(name) {
+  document.body.dataset.activeTab=name;
   for (const b of document.querySelectorAll('[data-tab]')) { b.classList.toggle('selected', b.dataset.tab === name); b.setAttribute('aria-current', b.dataset.tab === name ? 'page' : 'false'); }
   for (const id of ['home','analytics','lab','connections','friends','ranking','journey','history','settings','help']) $(id + 'Panel').hidden = id !== name;
   if (name === 'analytics' && loaded) renderActivity();
   if (name === 'connections' && loaded) connections.update(data,selectedAccount,config);
   if (name === 'lab' && loaded) analysisLab.update(data,selectedAccount,config);
+  if (name === 'home' && loaded) renderHome();
+  document.querySelector('[data-tab="'+name+'"]')?.scrollIntoView({block:'nearest',inline:'nearest'});
+  window.scrollTo(0,0);
 }
 const worldName = id => data.worlds.find(w => w.id === id)?.name || id;
 function place(f) { const l = f?.location; return l?.kind === 'world' ? worldName(l.worldId) : ({ private:'所在非公開', offline:'オフライン', traveling:'移動中', web:'ワールド情報なし', unknown:'所在不明' }[l?.kind] || '不明'); }
@@ -122,24 +130,23 @@ function render() {
   for(const id of ['exportCSV','exportJSON','exportEvents']) $(id).disabled = !selectedAccount;
 }
 function renderHome() {
+  if($('homePanel').hidden)return;
   const fresh=data.friends.filter(f=>f.isFriend && !stale(f));
   const live=fresh.filter(f=>f.presence==='online').length;
   const ranked=rankWorlds(data.friends,data.worlds,{pollSeconds:config.pollSeconds});
   const title='ゲーム内 '+live+'人 / ワールド公開 '+ranked.reduce((n,w)=>n+w.count,0)+'人 / 最新観測ワールド '+ranked.length+'件。';
   $('homeSummary').textContent=title+' 数値は自分が観測できたフレンドのみの集計です。';
   renderHistory($('homeRecent'),data.events.slice(0,5));
-  const holder=$('homeWorlds');holder.replaceChildren();
-  if (!ranked.length) {
-    holder.append(node('p','最新の公開ワールド情報はありません。','activity-empty')); return;
-  }
-  for (const item of ranked.slice(0,8)) {
-    const row=node('div',null,'home-world-row');
-    const link=node('a',item.name);link.href='https://vrchat.com/home/world/'+encodeURIComponent(item.id);
-    link.rel='noreferrer';link.target='_blank';
-    const name=node('strong');name.append(link);
-    row.append(name,node('small',String(item.count)+'人 / '+String(item.instances)+'インスタンス'));
-    holder.append(row);
-  }
+  const now=Date.now(),report=buildAnalysisReport(data,{accountId:selectedAccount,now,since:now-7*DAY,until:now+1,pollSeconds:config.pollSeconds});
+  for(const id of ['homeTrend','homePresence','homeWorlds','homeConnections','homeHours'])$(id).replaceChildren();
+  const explore=options=>{tab('lab');analysisLab.explore(options);$('labPanel').scrollIntoView({block:'start'});};
+  lineChart($('homeTrend'),report.daily,{label:'直近7日間の変更件数とワールド変更',series:[{key:'changes',label:'変更イベント'},{key:'moves',label:'ワールド変更'}],onSelect:row=>explore({day:row.day})});
+  const active=data.friends.filter(f=>f.isFriend),counts=new Map([['ゲーム内',0],['Web／アプリ',0],['オフライン',0],['古い観測',0],['不明',0]]);
+  for(const f of active){const name=stale(f)?'古い観測':presenceNames[f.presence]||'不明';counts.set(name,counts.get(name)+1);}
+  donutChart($('homePresence'),[...counts].map(([name,count])=>({name,count})),{label:'フレンドの現在の状態',unit:'登録フレンド'});
+  barChart($('homeWorlds'),ranked,{label:'現在の公開ワールド順位',moreLabel:'全件は「すべて」で確認できます。',limit:5,format:n=>n+'人',onSelect:row=>explore({worldId:row.id,section:'world'})});
+  barChart($('homeConnections'),report.connections,{label:'同じインスタンスの重なり時間',moreLabel:'全件は「詳しく」で確認できます。',key:'duration',limit:5,format:v=>v?formatObservedDuration(v):'時間未確認',onSelect:row=>explore({userId:row.id,section:'people'})});
+  columnChart($('homeHours'),report.hourly,{label:'日本時間0〜23時の変更イベント件数'});
 }
 const activityAxisFormat=new Intl.DateTimeFormat('ja-JP',{
   timeZone:'Asia/Tokyo',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false

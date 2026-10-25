@@ -1,41 +1,49 @@
 <!doctype html>
 <html lang="ja">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VRC Friends Observer</title><link rel="stylesheet" href="dashboard.css"><link rel="stylesheet" href="intelligence.css"><link rel="stylesheet" href="analysis-lab.css"><link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png"></head>
-<body>
-<header class="top"><div class="brand"><img class="brand-icon" src="icons/icon-128.png" width="48" height="48" alt=""><div><strong>VRC Friends Observer</strong><small>LOCAL FRIEND ACTIVITY · v0.6.1</small></div></div><div class="top-actions"><span id="demoFlag" class="pill" hidden>デモデータ</span><a href="https://vrchat.com/home" target="_blank" rel="noreferrer">VRChatを開く ↗</a></div></header>
-<main>
-<section class="hero"><div><div class="eyebrow">VRC GATHERING INTELLIGENCE</div><h1>観測から、活動の輪郭へ。</h1><p>最新状況、ユーザー別の時間軸、ワールド遷移をひとつの画面から探索。</p></div><div class="hero-actions"><button id="start" class="primary">収集を開始</button><button id="refresh">今すぐ更新</button></div></section>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VRC Friends Observer</title><link rel="stylesheet" href="dashboard.css"><link rel="stylesheet" href="intelligence.css"><link rel="stylesheet" href="analysis-lab.css"><link rel="stylesheet" href="workspace.css"><link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png"></head>
+<body data-active-tab="home">
+<a class="skip-link" href="#mainContent">メインコンテンツへ</a>
+<header class="top"><div class="brand"><img class="brand-icon" src="icons/icon-128.png" width="48" height="48" alt=""><div><strong>VRC Friends Observer</strong><small>LOCAL FRIEND ACTIVITY · v0.7.0</small></div></div><div class="workspace-name">ACTIVITY WORKSPACE <span>JST</span></div><div class="top-actions"><button id="start" class="primary">収集を開始</button><button id="refresh">今すぐ更新</button><span id="demoFlag" class="pill" hidden>デモデータ</span><a href="https://vrchat.com/home" target="_blank" rel="noreferrer">VRChatを開く ↗</a></div></header>
+<main id="mainContent" tabindex="-1">
+<div class="workspace-status">
 <div class="statusbar" role="status" aria-live="polite"><span id="phaseDot" class="status-dot"></span><strong id="phase">停止中</strong><span id="message">設定を保存し、収集を開始してください。</span><span id="nextRun" class="push"></span></div>
 <div class="contextbar"><label>表示アカウント <select id="account"><option value="">未取得</option></select></label><span id="lastSuccess">取得前</span><span>時刻：JST</span></div>
 <div class="cloudbar" role="status"><span id="syncStatus">クラウド同期：未設定</span><span id="syncTime" class="muted"></span><button id="syncNow">今すぐ同期</button></div>
+</div>
 <section class="stats" aria-label="観測状況"><div><span>登録フレンド</span><strong id="total">0</strong><small>保存済み名簿</small></div><div><span>ゲーム内</span><strong id="online">0</strong><small>有効時間内の観測</small></div><div><span>ワールド公開</span><strong id="visible">0</strong><small>自分から見える場所</small></div><div><span>所在非公開</span><strong id="private">0</strong><small>APIがprivateを返した件数</small></div><div><span>古い観測</span><strong id="stale">0</strong><small>再取得待ち・停止中</small></div></section>
-<nav class="tabs" aria-label="表示切替">
-  <button data-tab="home" class="selected">概要</button>
+<nav class="tabs" aria-label="表示切替"><div class="nav-caption">WORKSPACE</div>
+  <button data-tab="home" class="selected" aria-current="page">概要</button>
   <button data-tab="analytics">分析・タイムライン</button>
   <button data-tab="lab">分析ラボ</button>
   <button data-tab="connections">自分・つながり</button>
   <button data-tab="journey">探索・遷移図</button>
+  <div class="nav-caption">RECORDS</div>
   <button data-tab="friends">フレンド一覧</button>
   <button data-tab="ranking">ワールドランキング</button>
   <button data-tab="history">変更履歴</button>
+  <div class="nav-caption">PREFERENCES</div>
   <button data-tab="settings">収集設定</button>
   <button data-tab="help">使い方</button>
-</nav>
+<div class="nav-foot"><span class="status-dot ready"></span> LOCAL WORKSPACE<small>記録はこのブラウザーに保存</small></div></nav>
 <section id="homePanel" class="panel intelligence-panel">
   <div class="intelligence-heading">
-    <div><span class="eyebrow">COMMAND CENTER / A</span><h2>活動ダッシュボード</h2><p>現在の観測と変化の履歴をひとつの入口に。表示は選択中アカウントのデータのみ。</p></div>
-    <button class="primary" data-go-panel="analytics">時間軸で分析する →</button>
+    <div><span class="eyebrow">OVERVIEW</span><h2>活動ダッシュボード</h2><p>現在の状況と直近7日間の傾向。グラフから詳しい分析へ。</p></div>
+    <button class="primary" data-go-panel="lab">分析ラボを開く ↗</button>
   </div>
   <p id="homeSummary" class="intelligence-summary" role="status"></p>
-  <div class="intelligence-home-grid">
-    <section class="intelligence-subpanel" aria-labelledby="homeRecentHeading"><div class="section-heading-inline"><h3 id="homeRecentHeading">最近の変化</h3><button data-go-panel="history">履歴を見る</button></div><div id="homeRecent" class="home-changes"></div></section>
-    <section class="intelligence-subpanel" aria-labelledby="homeWorldHeading"><div class="section-heading-inline"><h3 id="homeWorldHeading">現在観測されたワールド</h3><button data-go-panel="journey">探索する</button></div><div id="homeWorlds" class="home-worlds"></div></section>
+  <div class="overview-grid">
+    <section class="dashboard-card overview-trend"><div class="section-heading-inline"><div><span class="eyebrow">ACTIVITY TREND</span><h3>記録された変化の推移</h3></div><span class="chart-period">直近7日間 · JST</span></div><div id="homeTrend"></div><p class="card-note">変更イベントの件数です。日付を選ぶと、その日の分析を開きます。</p></section>
+    <section class="dashboard-card"><div class="section-heading-inline"><div><span class="eyebrow">PRESENCE</span><h3>フレンドの現在の状態</h3></div></div><div id="homePresence"></div><p class="card-note">鮮度が有効な記録を分類。古い観測は別に表示します。</p></section>
+    <section class="dashboard-card"><div class="section-heading-inline"><div><span class="eyebrow">WORLD RANKING</span><h3 id="homeWorldHeading">いま注目のワールド</h3></div><button data-go-panel="ranking">すべて ↗</button></div><div id="homeWorlds" class="home-worlds"></div><p class="card-note">公開ワールドにいるフレンド数。選択するとワールド別の分析へ。</p></section>
+    <section class="dashboard-card"><div class="section-heading-inline"><div><span class="eyebrow">CONNECTIONS</span><h3>同席を観測した相手</h3></div><button data-go-panel="connections">詳しく ↗</button></div><div id="homeConnections"></div><p class="card-note">同じインスタンスでの重なり時間（推定）。1回だけの観測は時間未確認。</p></section>
+    <section class="dashboard-card"><div class="section-heading-inline"><div><span class="eyebrow">HOURLY PATTERN</span><h3>変化が記録された時間帯</h3></div><button data-go-panel="analytics">時間軸 ↗</button></div><div id="homeHours"></div><p class="card-note">直近7日間の変更件数。収集回数・頻度に影響されます。</p></section>
+    <section class="dashboard-card overview-recent"><div class="section-heading-inline"><div><span class="eyebrow">RECENT ACTIVITY</span><h3 id="homeRecentHeading">最近の変化</h3></div><button data-go-panel="history">履歴を見る ↗</button></div><div id="homeRecent" class="home-changes"></div></section>
   </div>
   <p class="footnote">現在値は観測時刻が新しいフレンドのみ集計します。収集が停止した場合、過去の状態を現在地として扱いません。</p>
 </section>
 <section id="analyticsPanel" class="panel intelligence-panel" hidden>
   <div class="intelligence-heading">
-    <div><span class="eyebrow">ANALYTICS LAB / B</span><h2>ユーザー活動タイムライン</h2><p>横軸 t = 日本時間（JST）、縦軸 = ユーザー。状態の観測結果と推定区間を分けて表示。</p></div>
+    <div><span class="eyebrow">ACTIVITY TIMELINE</span><h2>ユーザー活動タイムライン</h2><p>横軸 t = 日本時間（JST）、縦軸 = ユーザー。状態の観測結果と推定区間を分けて表示。</p></div>
   </div>
   <div class="activity-controls">
     <label>表示期間 <select id="activityRange" aria-label="タイムラインの表示期間"><option value="6">直近6時間</option><option value="24" selected>直近24時間</option><option value="168">7日間</option><option value="720">30日間</option></select></label>
@@ -62,7 +70,7 @@
 </section>
 
 <section id="labPanel" class="panel intelligence-panel" hidden>
-  <div class="intelligence-heading"><div><span class="eyebrow">OBSERVATION ANALYSIS LAB</span><h2>記録から、傾向を見つける。</h2><p>時間帯・ワールド・移動・自分の行動・つながりを横断して分析。表の見出しで並べ替え、CSV／JSONで集計結果を保存できます。</p></div><div class="lab-report-actions"><button id="labExportCSV" disabled>集計CSV</button><button id="labExportJSON" disabled>分析JSON</button></div></div>
+  <div class="intelligence-heading"><div><span class="eyebrow">OBSERVATION ANALYSIS LAB</span><h2>分析ラボ</h2><p>31の視点で記録を可視化。グラフで傾向をつかみ、データ表で詳細を確認できます。</p></div><div class="lab-report-actions"><button id="labExportCSV" disabled>集計CSV</button><button id="labExportJSON" disabled>分析JSON</button></div></div>
   <div class="lab-controls">
     <label>期間 <select id="labRange"><option value="1">24時間</option><option value="7" selected>7日間</option><option value="30">30日間</option><option value="90">90日間</option><option value="365">365日間</option><option value="custom">日付を指定</option></select></label>
     <div id="labCustomDates" class="lab-dates" hidden><label>開始日（JST）<input id="labStart" type="date"></label><label>終了日（JST・含む）<input id="labEnd" type="date"></label></div>

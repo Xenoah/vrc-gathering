@@ -40,7 +40,9 @@ try:
             page.locator('#labPairB').select_option('usr_demofriend0003')
             expect(page.locator('#labPairSummary')).to_contain_text('共通 3ワールド')
             expect(page.locator('#labNetworkSelection')).to_contain_text('星灯りの展望台')
+            page.locator('[data-tool=pair] .lab-data > summary').click()
             page.locator('#labGraphMinimum').select_option('3')
+            assert not page.locator('[data-tool=pair] .lab-data').evaluate('(el)=>el.open')
             expect(page.locator('#labNetworkSummary')).to_contain_text('1本の線')
             page.locator('#labNetworkFit').click();before=page.locator('#labNetworkZoom').inner_text()
             page.locator('#labNetworkIn').click();assert page.locator('#labNetworkZoom').inner_text()!=before
@@ -103,10 +105,12 @@ try:
             }''')
             large.locator('#labCategories [data-category=movement]').click()
             expect(large.locator('#labTable-explorers tbody tr')).to_have_count(50)
+            large.locator('[data-tool=explorers] .lab-data > summary').click()
             large.locator('#labTable-explorers .lab-more').click();expect(large.locator('#labTable-explorers tbody tr')).to_have_count(100)
             large.locator('#labTable-explorers .lab-more').click();expect(large.locator('#labTable-explorers tbody tr')).to_have_count(125)
             large.evaluate("window.lab.update(window.labData,'usr_testaccount1',{pollSeconds:180})")
             expect(large.locator('#labTable-explorers tbody tr')).to_have_count(125)
+            assert large.locator('[data-tool=explorers] .lab-data').evaluate('(el)=>el.open')
             large.locator('#labTable-explorers th button').first.click()
             assert large.locator('#labTable-explorers img').count()==0
             large.evaluate("window.lab.update(window.labData,'usr_otheraccount',{pollSeconds:180})")
