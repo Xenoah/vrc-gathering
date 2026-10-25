@@ -138,9 +138,21 @@ function renderActivity() {
   // Keep dashboard initialization and normal refreshes cheap while Analytics is hidden.
   if ($('analyticsPanel').hidden) return;
   const hours=Number($('activityRange').value)||24;
+  const worldSelect=$('activityWorld');
+  const previousWorld=worldSelect.value;
+  const worlds=new Map(data.worlds.map(w=>[w.id,w.name||w.id]));
+  for(const f of data.friends)if(f.location?.kind==='world')worlds.set(f.location.worldId,worlds.get(f.location.worldId)||f.location.worldId);
+  for(const e of data.journeyEvents||data.events) {
+    for(const entry of [e.previous,e.current])if(entry?.location?.kind==='world') {
+      const id=entry.location.worldId; worlds.set(id,worlds.get(id)||id);
+    }
+  }
+  worldSelect.replaceChildren(new Option('すべてのワールド',''),
+    ...[...worlds].sort((a,b)=>a[1].localeCompare(b[1],'ja')).map(([id,name])=>new Option(name,id)));
+  if(worlds.has(previousWorld))worldSelect.value=previousWorld;
   const timeline=buildActivityTimeline(data.friends,data.journeyEvents||data.events,data.worlds,{
     now:Date.now(),rangeMs:hours*3600000,filter:$('activityFilter').value,
-    query:$('activitySearch').value,pollSeconds:config.pollSeconds,limit:120
+    worldId:worldSelect.value,query:$('activitySearch').value,pollSeconds:config.pollSeconds,limit:120
   });
   const runs=(data.runs||[]).filter(r=>r.observedAt>=timeline.start && r.observedAt<=timeline.end);
   $('activitySummary').textContent=String(timeline.total)+'ユーザー / 表示 '+String(timeline.rows.length)+
@@ -390,7 +402,7 @@ async function exportData(kind){
 }
 document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab(b.dataset.tab);void syncView();}));
 document.querySelectorAll('[data-go-panel]').forEach(b=>b.addEventListener('click',()=>tab(b.dataset.goPanel)));
-for(const id of ['activityRange','activityFilter'])$(id).addEventListener('change',renderActivity);
+for(const id of ['activityRange','activityFilter','activityWorld'])$(id).addEventListener('change',renderActivity);
 let activitySearchDebounce;
 $('activitySearch').addEventListener('input',()=>{
   clearTimeout(activitySearchDebounce);
