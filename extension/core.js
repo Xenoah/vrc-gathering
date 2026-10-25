@@ -1,4 +1,31 @@
-import { continuityMetadata } from './activity-analysis.js';
+// Continuity runs independently inside the service worker and the Node mock harness.
+export const ACTIVITY_NAMESPACE = 'vrc.activity';
+const validStart = (value, upper) => Number.isSafeInteger(value) && value > 0 && value <= upper;
+export function continuityMetadata(previous, current) {
+  const time = current.observedAt;
+  const old = previous?.extensions?.[ACTIVITY_NAMESPACE] || {};
+  const sameFriend = !!previous && previous.isFriend === current.isFriend;
+  const samePresence = sameFriend && previous.presence === current.presence;
+  const a = previous?.location || {}, b = current.location || {};
+  const samePlace = samePresence && a.kind === b.kind && a.worldId === b.worldId;
+  const sameInstance = samePlace && a.instanceId === b.instanceId;
+  const prior = (key, same) => {
+    if (!same) return time;
+    // Legacy data has no independent continuity fields. StateFirstObservedAt
+    // is conservative: display name or status edits could have reset it.
+    const fallback = previous.stateFirstObservedAt || previous.observedAt;
+    const since = validStart(old[key], previous.observedAt) ? old[key] :
+      validStart(fallback, previous.observedAt) ? fallback : previous.observedAt;
+    return Math.min(time, since);
+  };
+  return {
+    presenceSince: prior('presenceSince', samePresence),
+    placeSince: prior('placeSince', samePlace),
+    instanceSince: prior('instanceSince', sameInstance)
+  };
+}
+
+
 export const VERSION = '0.3.2';
 export const DEFAULTS = Object.freeze({ enabled: false, contact: '', pollSeconds: 180, retentionDays: 30, offlineRefreshMinutes: 60 });
 export const USER_ID = /^(usr_[a-zA-Z0-9-]{8,64}|[a-zA-Z0-9]{8,32})$/;
