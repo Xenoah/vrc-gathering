@@ -20,7 +20,7 @@
 
 ## インストール
 
-1. [Releases](https://github.com/Xenoah/vrc-gathering/releases) の `vrc-gathering-v0.3.2.zip` をダウンロードし、固定フォルダーへ展開します。
+1. [Releases](https://github.com/Xenoah/vrc-gathering/releases) の `vrc-gathering-v0.4.0.zip` をダウンロードし、固定フォルダーへ展開します。
 2. Chromeの `chrome://extensions` で「デベロッパーモード」を有効にします。
 3. 「パッケージ化されていない拡張機能を読み込む」から、展開先の **`extension`** フォルダーを選びます。
 4. 同じChromeプロファイルで [vrchat.com](https://vrchat.com/home) にログインします。
@@ -32,7 +32,7 @@
 
 取得するのは自分のアカウントから見える情報です。所在非公開はそのまま記録します。定期観測なので、取得間隔の間やPCスリープ中の移動は復元できません。記録はChromeプロファイル内に保存され、拡張・プロファイルの削除で失われるため、必要な履歴はエクスポートしてください。
 
-v0.3.2は個人用の非公式ツールです。**Node.jsの72テストとChromiumでの画面・IndexedDB検証は合格しています。Windows／Chrome拡張としての実機動作、実際のVRChatログイン、および公開済みGASへの接続は未確認です。** 詳細は [VALIDATION.md](VALIDATION.md) に記載しています。
+v0.4.0は個人用の非公式ツールです。**Node.jsの単体テストとChromiumでの画面・IndexedDB検証は合格しています。Windows／Chrome拡張としての実機動作、実際のVRChatログイン、および公開済みGASへの接続は未確認です。** 詳細は [VALIDATION.md](VALIDATION.md) に記載しています。
 
 ## 開発・配布
 
