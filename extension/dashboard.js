@@ -19,22 +19,23 @@ const $ = id => document.getElementById(id), isDemo = new URLSearchParams(locati
 const dateFormat = new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
 const date = v => v ? dateFormat.format(v) : '未確認';
 const iso = v => v ? new Date(v).toISOString() : '';
-const presenceNames = { online:'ゲーム内', active:'Web／アプリ', offline:'オフライン', unknown:'不明' };
-const statusNames = { active:'オンライン', 'join me':'Join Me', 'ask me':'Ask Me', busy:'取り込み中', offline:'オフライン' };
+const presenceNames = { online:'ゲーム内', active:'Web／アプリ', offline:'現実世界', unknown:'不明' };
+const statusNames = { active:'オンライン', 'join me':'Join Me', 'ask me':'Ask Me', busy:'取り込み中', offline:'現実世界' };
 const accessNames = { public:'Public', friends:'Friends', 'friends-plus':'Friends+', invite:'Invite', 'invite-plus':'Invite+', 'group-public':'Group Public', 'group-plus':'Group+', 'group-members':'Group', 'group-unknown':'Group', unknown:'不明' };
 let data = { friends:[], events:[], worlds:[] }, config = { ...DEFAULTS }, state = {}, selectedAccount = '', dirty = false, renderTimer, loaded = false, cloudConfig = {}, cloudState = {}, cloudDiagnostic = {}, syncPermissions = [], testingConnection = false, syncDirty = false, imageDirty = false, imageConfig = {}, imageRows = [], imageRevision = null, loadedImageRevision;
 const demo = isDemo ? demoData() : null;
 initializeNavigationIcons();
 function node(tag, content, className) { const el = document.createElement(tag); if (content != null) el.textContent = content; if (className) el.className = className; return el; }
 const imageURLs=new Map(),imageElements=new Map();let currentGraph;
-const network=createNetworkView({viewport:$('networkViewport'),stage:$('networkStage'),canvas:$('networkCanvas'),zoomLabel:$('networkZoom'),onSelect:showNetworkDetail,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
+const network=createNetworkView({viewport:$('networkViewport'),stage:$('networkStage'),canvas:$('networkCanvas'),zoomLabel:$('networkZoom'),directional:true,wheelZoom:true,motionButton:$('networkMotion'),onSelect:showNetworkDetail,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const connections=createConnectionsView({node,date,avatar,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const analysisLab=createAnalysisLab({node,date,download,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const xProfileView=createXProfileView({node,date,request:message=>chrome.runtime.sendMessage(message),isOpen:()=>$('detail').open});
 function avatar(kind,id,name) {
   const url=imageURLs.get(kind+':'+id);
-  if(!url)return node('span',[...name||'?'][0],'avatar');
-  const img=node('img',null,'avatar cached-avatar');img.src=url;img.alt='';img.width=36;img.height=36;img.loading='lazy';return img;
+  const privateClass=kind==='user'&&data.friends.some(f=>f.id===id&&f.location?.kind==='private')?' is-private':'';
+  if(!url)return node('span',[...name||'?'][0],'avatar'+privateClass);
+  const img=node('img',null,'avatar cached-avatar'+privateClass);img.src=url;img.alt='';img.width=36;img.height=36;img.loading='lazy';return img;
 }
 async function loadImages() {
   const revision=selectedAccount+':'+JSON.stringify(imageRevision);if(revision===loadedImageRevision)return;
@@ -68,7 +69,7 @@ function tab(name) {
   window.scrollTo(0,0);
 }
 const worldName = id => data.worlds.find(w => w.id === id)?.name || id;
-function place(f) { const l = f?.location; return l?.kind === 'world' ? worldName(l.worldId) : ({ private:'所在非公開', offline:'オフライン', traveling:'移動中', web:'ワールド情報なし', unknown:'所在不明' }[l?.kind] || '不明'); }
+function place(f) { const l = f?.location; return l?.kind === 'world' ? worldName(l.worldId) : ({ private:'プライベート', offline:'現実世界', traveling:'移動中', web:'ワールド情報なし', unknown:'所在不明' }[l?.kind] || '不明'); }
 function stale(f) { return Date.now() - f.observedAt > Math.max(config.pollSeconds * 2.2, 120) * 1000; }
 function summary(f) { return f ? `${presenceNames[f.presence] || f.presence} · ${place(f)}${f.statusDescription ? ' · ' + f.statusDescription : ''}` : '記録なし'; }
 function shortId(s, n=24) { return s?.length > n ? s.slice(0,n) + '…' : s || '—'; }
@@ -141,7 +142,7 @@ function renderHome() {
   for(const id of ['homeTrend','homePresence','homeWorlds','homeConnections','homeHours'])$(id).replaceChildren();
   const explore=options=>{tab('lab');analysisLab.explore(options);$('labPanel').scrollIntoView({block:'start'});};
   lineChart($('homeTrend'),report.daily,{label:'直近7日間の変更件数とワールド変更',series:[{key:'changes',label:'変更イベント'},{key:'moves',label:'ワールド変更'}],onSelect:row=>explore({day:row.day})});
-  const active=data.friends.filter(f=>f.isFriend),counts=new Map([['ゲーム内',0],['Web／アプリ',0],['オフライン',0],['古い観測',0],['不明',0]]);
+  const active=data.friends.filter(f=>f.isFriend),counts=new Map([['ゲーム内',0],['Web／アプリ',0],['現実世界',0],['古い観測',0],['不明',0]]);
   for(const f of active){const name=stale(f)?'古い観測':presenceNames[f.presence]||'不明';counts.set(name,counts.get(name)+1);}
   donutChart($('homePresence'),[...counts].map(([name,count])=>({name,count})),{label:'フレンドの現在の状態',unit:'登録フレンド'});
   barChart($('homeWorlds'),ranked,{label:'現在の公開ワールド順位',moreLabel:'全件は「すべて」で確認できます。',limit:5,format:n=>n+'人',onSelect:row=>explore({worldId:row.id,section:'world'})});
@@ -297,7 +298,7 @@ function renderIndividualJourney() {
   const journey=worldJourney(data.journeyEvents || data.events,userId,{since:days ? Date.now()-days*86400000 : 0,limit:200});
   const flow=$('journeyFlow');flow.replaceChildren();
 
-  const labels={private:'所在非公開',offline:'オフライン',traveling:'移動中',web:'Web／アプリ',unknown:'所在不明',removed:'名簿から消失'};
+  const labels={private:'プライベート',offline:'現実世界',traveling:'移動中',web:'Web／アプリ',unknown:'所在不明',removed:'名簿から消失'};
   for(const point of journey.nodes){
     const item=node('li',null,point.kind), time=node('time',date(point.observedAt));time.dateTime=new Date(point.observedAt).toISOString();
     item.append(time,node('h3',point.kind==='world'?worldName(point.worldId):labels[point.kind]));
@@ -318,7 +319,7 @@ function renderCloud() {
   $('syncPermissionStatus').textContent=isDemo?'デモ表示：接続権限の確認は行いません。':CLOUD_ORIGINS.map((origin,i)=>new URL(origin.replace('/*','/')).hostname+'：'+(syncPermissions[i]===true?'許可済み':syncPermissions[i]===false?'未許可':'確認できません')).join(' / ');
   $('grantSyncPermissions').disabled=isDemo || syncPermissions.every(v=>v===true)&&syncPermissions.length===2;
   $('syncSavedState').textContent=cloudConfig.endpoint?`保存済み設定：同期${cloudConfig.enabled?'有効':'無効'} · 同期キー${cloudConfig.token?'保存済み':'未設定'}`:'保存済み設定：未設定';
-  $('syncProgress').textContent=({permission:'接続権限の確認',hello:'GASへの接続確認',export:'送信対象の読み込み',push:'GASへ送信',pull:'GASから受信',merge:'端末へ保存',pending:'次のバッチ待ち',complete:'完了'}[cloudState.stage] || (cloudState.phase==='syncing'?'同期中（旧版のため段階不明）':'未確認'));
+  $('syncProgress').textContent=({permission:'接続権限の確認',hello:'GASへの接続確認',export:'送信対象の読み込み',push:'GASへ送信',pull:'GASから受信',merge:'端末へ保存',pending:'次のバッチ待ち',upgrade:'GAS更新待ち',complete:'完了'}[cloudState.stage] || (cloudState.phase==='syncing'?'同期中（旧版のため段階不明）':'未確認'));
   $('syncLastAttempt').textContent=date(cloudState.lastAttemptAt);
   $('syncLastError').textContent=cloudState.lastError || (cloudState.phase==='error'?cloudState.message:'なし');
   $('syncRetryAt').textContent=cloudState.retryAt>Date.now()?`${date(serverWait?serverRetryDeadline(cloudState):cloudState.retryAt)}（${serverWait?'サーバー指定の待機':'自動再試行の待機。今すぐ同期で再試行できます'}）`:'待機なし';

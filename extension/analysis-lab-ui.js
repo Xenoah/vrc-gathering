@@ -72,7 +72,7 @@ export function createAnalysisLab({node,date,download,imageFor}) {
       tool('currentWorlds','world','現在の注目ワールド','期間指定にかかわらず、鮮度が有効な最新の公開ワールドだけを集計します。',r.currentWorlds,[col('name','ワールド'),col('users','滞在フレンド'),col('instances','確認インスタンス')]),
       tool('worldGrowth','overview','ワールドの注目度の変化','観測されたユニークユーザー数を前期と比較。前期0の場合、増減率は算出しません。',r.worldGrowth,[col('name','ワールド'),col('current','今期の人'),col('previous','前期の人'),col('delta','差分',signed),col('change','増減率',percent)]),
       tool('routes','movement','よく観測された移動経路','間の経路は不明です。「近接」は前後の観測間隔が収集設定の許容幅内だった件数です。',r.routes,[col('name','ワールド変更'),col('count','件数'),col('users','ユーザー'),col('nearby','近接観測'),col('lastSeenAt','最終観測',date)]),
-      tool('roundTrips','movement','往復パターン','観測順にA→B→Aが続いた記録。途中に所在非公開などがあれば接続しません。実際の全移動経路ではありません。',r.roundTrips,[col('name','ユーザー'),col('route','観測順'),col('count','回数'),col('lastSeenAt','最終観測',date)]),
+      tool('roundTrips','movement','往復パターン','観測順にA→B→Aが続いた記録。途中にプライベートなどがあれば接続しません。実際の全移動経路ではありません。',r.roundTrips,[col('name','ユーザー'),col('route','観測順'),col('count','回数'),col('lastSeenAt','最終観測',date)]),
       tool('explorers','movement','ユーザー別の探索傾向','変更履歴のあるユーザーほど観測点が多くなります。活動時間のランキングではありません。',r.people,[col('name','ユーザー'),col('worlds','ワールド数',v=>v.length),col('moves','ワールド変更'),col('days','観測日数'),col('changes','変更イベント'),col('observations','観測点')]),
       tool('selfWorlds','self','自分の再訪・滞在傾向','自分の公開ワールド区間。再訪間隔は前の区間の最終観測から次の開始まで。インスタンス変更も別区間です。',r.selfWorlds,[col('name','ワールド'),col('visits','訪問区間'),col('returns','2回目以降'),col('duration','推定時間',observedTime),col('medianGap','再訪間隔の中央値',duration)]),
       tool('dwell','self','自分の滞在区間の分布','1回だけの観測は「時間未確認」に分け、長さの統計から除外します。',r.dwell,[col('name','観測区間の長さ'),col('count','区間数')]),

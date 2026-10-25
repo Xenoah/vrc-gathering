@@ -38,7 +38,7 @@ test('unconfirmed private/offline locations do not become routes or world simila
   const f=snapshot(at+2000,bob,b);f.presence='offline';
   const r=report({events:[e],friends:[f]});
   assert.equal(r.routes.length,0);assert.equal(r.people.find(p=>p.id===bob).worlds.length,0);
-  assert.ok(r.states.some(s=>s.name.includes('所在非公開')));assert.ok(!r.worlds.some(w=>w.id===b));
+  assert.ok(r.states.some(s=>s.name.includes('プライベート')));assert.ok(!r.worlds.some(w=>w.id===b));
 });
 test('world and user filters apply to observations, routes and encounters without hiding own visits',()=>{
   const r=report({friends:[snapshot(at+1000),snapshot(at+2000,bob,b)],events:[event(at+3000,a,b),event(at+4000,b,c,bob)],

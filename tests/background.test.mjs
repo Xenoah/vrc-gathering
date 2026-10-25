@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import fs from 'node:fs/promises';
 import { createSettingsBackup } from '../extension/settings-backup.js';
+import { gasHarness,TOKEN } from './helpers/gas.mjs';
 const root=new URL('../extension/',import.meta.url);
 const uid='usr_01234567-1111-2222-3333-012345678901',fid='usr_11111111-1111-2222-3333-012345678901',wid='wrld_01234567-1111-2222-3333-012345678901';
 const owner={id:uid,displayName:'テスト本人',friends:[fid],onlineFriends:[fid],offlineFriends:[],activeFriends:[],authToken:'SECRET_AUTH',email:'SECRET_MAIL'};
@@ -21,7 +22,7 @@ async function harness(handler, allowCloud = true){
     runtime:{id:'testextension',getURL:p=>'chrome-extension://testextension/'+p,onMessage:hook('message'),onInstalled:hook('installed'),onStartup:hook('startup')},
     declarativeNetRequest:{updateDynamicRules:async v=>{saved.rules=v;}},tabs:{create:async()=>{}}};
   class Clock extends Date{constructor(...args){super(...(args.length?args:[now]));}static now(){return now;}}
-  const context=vm.createContext({chrome,console,navigator:{userAgent:'TestChrome'},Date:Clock,Math,URL,AbortController,AbortSignal,DOMException,
+  const context=vm.createContext({chrome,console,navigator:{userAgent:'TestChrome'},Date:Clock,Math,URL,crypto,TextEncoder,AbortController,AbortSignal,DOMException,
     setTimeout:(fn,ms)=>{now+=ms;queueMicrotask(fn);return 1;},clearTimeout:()=>{},
     fetch:async(url,options)=>{if(closed)throw Error('closed');now+=50;calls.push({url,options,at:now});
       const response=await handler(new URL(url),calls.length,options);return {ok:(response.status||200)<300,status:response.status||200,type:response.type||'basic',headers:new Headers({'Content-Type':'application/json',...(response.headers||{})}),json:async()=>structuredClone(response.body)};}});
@@ -37,7 +38,7 @@ async function harness(handler, allowCloud = true){
   const connections=new vm.SourceTextModule(await fs.readFile(new URL('connections.js',root),'utf8'),{context});await connections.link(()=>{});
   const xProfiles=new vm.SourceTextModule(await fs.readFile(new URL('x-profile.js',root),'utf8'),{context});await xProfiles.link(()=>{});
   const bg=new vm.SourceTextModule(await fs.readFile(new URL('background.js',root),'utf8'),{context});
-  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:db);await bg.evaluate();
+  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:db);await bg.evaluate();
   async function flush(){for(let i=0;i<15;i++)await new Promise(setImmediate);}
   await flush();
   const command=message=>new Promise(resolve=>events.message(message,{id:'testextension',url:'chrome-extension://testextension/dashboard.html'},resolve));
@@ -91,7 +92,7 @@ test('cloud configuration requires optional Google permissions and cannot alter 
   assert.equal(response.ok,false);assert.match(response.error,/権限/);assert.equal(h.store.cloudSync,undefined);assert.equal(h.calls.length,0);h.stop();
 });
 test('cloud setup schedules sync, uses no VRChat cookies, and clearing local records disables sync',async()=>{
-  const h=await harness((url,n,options)=>({body:JSON.parse(options.body).action==='hello'?{protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],maxBatch:100}:{protocol:2,ok:true,datasetId:'test',records:[],cursor:0,hasMore:false}}));
+  const h=await harness((url,n,options)=>({body:JSON.parse(options.body).action==='hello'?{protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles'],retentionDays:0,maxBatch:100}:{protocol:2,ok:true,datasetId:'test',records:[],cursor:0,hasMore:false}}));
   const response=await h.command({type:'SAVE_SYNC',settings:{enabled:true,endpoint:'https://script.google.com/macros/s/test/exec',token:'test_token_0123456789_abcdefghijklmnopqrstuvwxyz'}});
   assert.equal(response.ok,true);await h.flush();assert.equal(h.store.cloudState.phase,'ready');
   assert.equal(h.calls.length,2);assert.equal(h.calls[0].options.credentials,'omit');assert.equal(h.calls[0].options.method,'POST');
@@ -112,7 +113,7 @@ test('image collection is opt-in and candidates are queued only after the accoun
 });
 
 test('connection test command uses saved settings and performs one hello without enabling sync',async()=>{
-  const hello={protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],maxBatch:100};
+  const hello={protocol:2,ok:true,datasetId:'test',protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:['friends','events','worlds','runs','accounts','visits','encounters','profiles'],retentionDays:0,maxBatch:100};
   const h=await harness(()=>({body:hello}));
   await h.command({type:'SAVE_SYNC',settings:{enabled:false,endpoint:'https://script.google.com/macros/s/test/exec',token:'test_token_0123456789_abcdefghijklmnopqrstuvwxyz'}});
   assert.equal(h.calls.length,0);const response=await h.command({type:'TEST_SYNC'});assert.equal(response.connected,true);assert.equal(h.calls.length,1);
@@ -232,4 +233,18 @@ test('scheduled collection waits for the profile lookup and uses the same rate-l
   const count=h.calls.length;h.events.alarm({name:'vrc-observer-next'});await h.flush();assert.equal(h.calls.length,count);
   release();assert.equal((await fetching).ok,true);await h.flush();assert.ok(h.saved.runs.length>=2);
   for(let i=1;i<h.calls.length;i++)assert.ok(h.calls[i].at-h.calls[i-1].at>=2200);h.stop();
+});
+
+
+test('the real worker exports and restores X profiles through the GAS sync adapter',async()=>{
+  const gas=gasHarness();gas.properties.RETENTION_DAYS='0';
+  const h=await harness((url,count,options)=>url.hostname==='script.google.com'?{body:gas.request(JSON.parse(options.body))}:url.pathname.includes('/profile/')?{body:{id:fid,bioLinks:['https://x.com/example'],bio:'SECRET_BIO'}}:good(url));
+  await h.start();await h.command({type:'X_PROFILE',accountId:uid,userId:fid});await h.flush();
+  h.store.cloudSync={enabled:true,endpoint:'https://script.google.com/macros/s/test_deployment/exec',token:TOKEN};
+  const uploaded=await h.command({type:'SYNC',force:true});assert.equal(uploaded.ok,true);assert.equal(gas.table('VRCProfiles').length,2);
+  assert.ok(!JSON.stringify(gas.table('VRCProfiles')).includes('SECRET_BIO'));
+  h.store.xProfileCache={};h.store.cloudCheckpoint={cursor:0,receipts:{}};h.advance(61000);
+  const restored=await h.command({type:'SYNC',force:true});assert.equal(restored.ok,true);
+  assert.deepEqual(h.store.xProfileCache[uid+'/'+fid].urls,['https://x.com/example']);
+  h.stop();
 });

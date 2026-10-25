@@ -57,3 +57,28 @@ test('older previous snapshots from another device cannot reverse a user timelin
   assert.ok(journey.nodes.every((n,i)=>!i||n.observedAt>=journey.nodes[i-1].lastObservedAt));
   assert.equal(journey.nodes.at(-1).worldId,'wrld_demoatelier000');
 });
+
+test('network omits travel, joins its known endpoints and preserves private boundaries',async()=>{
+  const {worldNetwork}=await import('../extension/insights.js'),d=demoData(),sample=d.events[0],t=Date.now()-100000;
+  const state=where=>({...sample.current,location:location(where)});
+  const route=places=>places.map((p,i)=>({...sample,observedAt:t+i*1000,previousObservedAt:i?t+(i-1)*1000:null,previous:i?state(places[i-1]):null,current:state(p)}));
+  const a='wrld_democafe000000:1',b='wrld_demoatelier000:2';
+  const graph=worldNetwork(route([a,'traveling',b]),[],d.worlds);
+  assert.equal(graph.nodes.length,2);assert.equal(graph.edges.length,1);
+  assert.equal(graph.edges[0].from,'wrld_democafe000000');assert.equal(graph.edges[0].to,'wrld_demoatelier000');
+  assert.equal(worldNetwork(route([a,'traveling',a]),[],d.worlds).edges.length,0);
+  const hidden=worldNetwork(route([a,'traveling','private','traveling',b,'offline']),[],d.worlds);
+  assert.ok(hidden.nodes.some(n=>n.name==='プライベート'));assert.ok(hidden.nodes.some(n=>n.name==='現実世界'));
+  assert.ok(!hidden.edges.some(e=>e.from==='wrld_democafe000000'&&e.to==='wrld_demoatelier000'));
+  assert.equal(worldNetwork([], [{...d.friends[0],location:location('traveling')}],d.worlds).nodes.length,0);
+});
+test('network visual encodings scale current popularity and route frequency independently',async()=>{
+  const {worldRadius,routeColor,routePoint}=await import('../extension/network-style.js');
+  const node=count=>({kind:'world',currentUsers:new Set(Array.from({length:count},(_,i)=>i))});
+  assert.ok(worldRadius(node(0),100)<worldRadius(node(10),100));assert.ok(worldRadius(node(10),100)<worldRadius(node(100),100));
+  assert.equal(worldRadius({kind:'private'},100),35);
+  assert.equal(routeColor(1,100),'#518b9b');assert.equal(routeColor(10,100),'#f7cf57');assert.equal(routeColor(100,100),'#ff5d48');
+  const path={a:{x:1,y:2},b:{x:10,y:20},c:{x:4,y:9}};
+  assert.deepEqual(routePoint(path,0),path.a);assert.deepEqual(routePoint(path,1),path.b);
+  assert.ok(routePoint(path,.7).x>routePoint(path,.3).x);
+});

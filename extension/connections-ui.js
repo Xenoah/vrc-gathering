@@ -9,7 +9,7 @@ export function createConnectionsView({node,date,imageFor,avatar}) {
     onSelect:item=>{selected=item?.connection?.id || '';renderDetail(item?.connection);}});
   const worldName=id=>data.worlds?.find(w=>w.id===id)?.name || id;
   const duration=value=>value>0?formatObservedDuration(value):'時間未確認';
-  const locationName=visit=>visit.location.kind==='world'?worldName(visit.location.worldId):({private:'所在非公開',offline:'オフライン',web:'Web／アプリ',traveling:'移動中',unknown:'現在地を取得できませんでした'}[visit.location.kind]||'不明');
+  const locationName=visit=>visit.location.kind==='world'?worldName(visit.location.worldId):({private:'プライベート',offline:'現実世界',web:'Web／アプリ',traveling:'移動中',unknown:'現在地を取得できませんでした'}[visit.location.kind]||'不明');
   function renderDetail(row) {
     const holder=$('connectionDetail');holder.replaceChildren();
     if(!row){holder.append(node('p','ユーザー名や図の点・線を選ぶと、同席の根拠を表示します。'));return;}

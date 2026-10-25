@@ -145,7 +145,7 @@ test('dataset change resets upload receipts and cursors and resynchronizes exist
 });
 test('new clients fall back only on explicit legacy protocol rejection',async()=>{
   const gas=gasHarness(),a=client(gas,fixture(),async(url,options)=>{const body=JSON.parse(options.body);return {ok:true,json:async()=>body.protocol===2?{protocol:1,ok:false,code:'REQUEST'}:gas.request(body)};});
-  await a.sync();assert.equal(a.store.cloudState.protocol,1);assert.match(a.store.cloudState.message,/旧GAS/);assert.equal(gas.cells.length,fixture().length+1);
+  await a.sync();assert.equal(a.store.cloudState.protocol,1);assert.equal(a.store.cloudState.upgradeRequired,true);assert.equal(a.store.cloudState.phase,'partial');assert.match(a.store.cloudState.message,/旧GAS/);assert.equal(gas.cells.length,fixture().length+1);
   const b=client(gas,[],async()=>({ok:true,json:async()=>({protocol:1,ok:false,code:'AUTH'})}));await assert.rejects(b.sync(),/同期キー/);assert.equal(b.calls.length,1);
 });
 test('future schemas/operations are rejected atomically; namespaces survive legacy upserts and convergent merges',async()=>{
@@ -184,7 +184,7 @@ test('copying a spreadsheet creates a new cursor domain and migration sequence s
 
 
 test('GAS setup identifies invalid properties while public errors disclose only CONFIG',()=>{
-  const cases=[['SPREADSHEET_ID','',/SPREADSHEET_ID が未設定/],['SYNC_TOKEN','short-secret-15',/SYNC_TOKEN.*現在 15 文字/],['SYNC_TOKEN','x'.repeat(257),/現在 257 文字/],['RETENTION_DAYS','0',/RETENTION_DAYS.*1〜365/],['RETENTION_DAYS','1.5',/RETENTION_DAYS.*整数/]];
+  const cases=[['SPREADSHEET_ID','',/SPREADSHEET_ID が未設定/],['SYNC_TOKEN','short-secret-15',/SYNC_TOKEN.*現在 15 文字/],['SYNC_TOKEN','x'.repeat(257),/現在 257 文字/],['RETENTION_DAYS','-1',/RETENTION_DAYS.*0〜365/],['RETENTION_DAYS','1.5',/RETENTION_DAYS.*整数/]];
   for(const [name,value,expected] of cases){const gas=gasHarness();gas.properties[name]=value;assert.throws(()=>gas.context.setup(),expected);const result=gas.request({action:'hello'});assert.deepEqual(result,{protocol:2,ok:false,code:'CONFIG'});assert.equal(gas.opens,0);assert.ok(!JSON.stringify(gas.logs).includes('short-secret-15'));}
 });
 test('createSyncToken generates a valid key without printing it and does not overwrite valid existing keys',()=>{
@@ -268,4 +268,31 @@ test('old GAS retains new histories locally and capability upgrades reset cursor
   upgraded=true;reader.advance(61000);await reader.sync();
   const pull=reader.calls.filter(c=>JSON.parse(c.options.body).action==='pull').at(-1);
   assert.equal(JSON.parse(pull.options.body).cursor,0);assert.ok(reader.rows.has(newRecords[0].key));assert.equal(reader.store.cloudState.unsupported,0);
+});
+
+test('GAS stores acknowledged older observations and zero retention keeps the complete archive',()=>{
+  const gas=gasHarness(),record=fixture()[0],old=Date.now()-90*86400000;
+  record.value.observedAt=record.value.firstObservedAt=record.value.stateFirstObservedAt=old;
+  const reply=gas.request({action:'push',records:[record]});assert.equal(reply.accepted,1);
+  assert.equal(gas.table('VRCFriends').length,2); // Old GAS silently dropped this acknowledged record.
+  gas.properties.RETENTION_DAYS='0';gas.context.pruneRecords();assert.equal(gas.table('VRCFriends').length,2);
+  assert.equal(gas.request({action:'pull',cursor:0,limit:100}).records.length,1);
+  delete gas.properties.RETENTION_DAYS;assert.equal(gas.request({protocol:2,action:'hello'}).retentionDays,0);
+});
+test('all collected kinds sync with bounded receipts and remain pending on an older GAS until upgraded',async()=>{
+  const gas=gasHarness(),profile=normalizeRecord('profiles',{accountId:'usr_mediaaccount001',userId:'usr_mediafriend0001',observedAt:Date.now(),urls:['https://x.com/example']});
+  const old=fixture()[0];old.value.observedAt=old.value.firstObservedAt=old.value.stateFirstObservedAt=Date.now()-90*86400000;
+  let upgraded=false;
+  const a=client(gas,[profile,old],async(url,options)=>{const body=JSON.parse(options.body);
+    // Simulate the old GAS bug: acknowledge an expired push without persisting it.
+    const response=!upgraded&&body.action==='push'?{protocol:2,ok:true,datasetId:body.datasetId,accepted:body.records.length}:gas.request(body);
+    if(body.action==='hello'&&!upgraded){response.kinds=response.kinds.filter(k=>k!=='profiles');delete response.retentionDays;}
+    return {ok:true,json:async()=>response};});
+  await a.sync();assert.equal(a.store.cloudState.unsupported,1);assert.equal(gas.table('VRCProfiles').length,1);
+  assert.equal(gas.table('VRCFriends').length,1);assert.ok(a.store.cloudCheckpoint.receipts[old.key]);
+  upgraded=true;a.advance(61000);await a.sync();assert.equal(a.store.cloudState.unsupported,0);assert.equal(gas.table('VRCProfiles').length,2);
+  assert.equal(gas.table('VRCFriends').length,2);
+  assert.match(a.store.cloudCheckpoint.receipts[profile.key],/^sha256:[a-f0-9]{64}$/);
+  a.advance(61000);await a.sync();assert.equal(a.store.cloudState.uploaded,0);
+  const b=client(gas);await b.sync();assert.ok(b.rows.has(profile.key));
 });

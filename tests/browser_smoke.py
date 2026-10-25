@@ -130,7 +130,7 @@ try:
             page.set_viewport_size({'width':1280,'height':900})
             page.locator('#journeyUser').select_option(label='星灯り')
             expect(page.locator('#journeyFlow > li')).to_have_count(4)
-            expect(page.locator('#journeyFlow > li').nth(1)).to_contain_text('所在非公開')
+            expect(page.locator('#journeyFlow > li').nth(1)).to_contain_text('プライベート')
             page.screenshot(path='/tmp/vrc-gathering-journey.png', full_page=True)
             page.set_viewport_size({'width':390, 'height':844})
             page.locator('[data-tab=ranking]').click()

@@ -13,7 +13,7 @@ GASの `/exec` へPOSTし、`Content-Type: text/plain;charset=UTF-8` のJSONを�
 ```
 
 ```json
-{"protocol":2,"ok":true,"datasetId":"UUID","protocols":[1,2],"recordSchemas":[1,2],"operations":["upsert"],"kinds":["friends","events","worlds","runs","accounts","visits","encounters"],"maxBatch":100,"serverTime":1792800000000}
+{"protocol":2,"ok":true,"datasetId":"UUID","protocols":[1,2],"recordSchemas":[1,2],"operations":["upsert"],"kinds":["friends","events","worlds","runs","accounts","visits","encounters","profiles"],"maxBatch":100,"retentionDays":0,"serverTime":1792800000000}
 ```
 
 以後の要求には `protocol:2`、`token`、`datasetId` を必ず付けます。
@@ -62,6 +62,7 @@ GASの `/exec` へPOSTし、`Content-Type: text/plain;charset=UTF-8` のJSONを�
 | runs | 巡回開始ミリ秒 | 開始／終了時刻・取得／変更数・ページ継続位置 |
 | accounts | アカウントID | 所有者の表示名・最終観測 |
 | visits | startedAt | 自分の訪問・状態区間。startedAt / lastSeenAt / endedAt / presence / location |
+| profiles | ユーザーID | Xプロフィールの確認日時・公開URL（最大5件） |
 | encounters | userId + `:` + startedAt | 同席観測区間。visitStartedAt / lastSeenAt / endedAt / relation / location / otherInstanceId |
 
 観測日時が新しいレコードを優先し、同時刻は正規化JSONの辞書順で決定します。イベントの識別は既存v1と同じです。別端末が同じユーザーを同じミリ秒に異なる状態で記録した場合も、1件へ競合解決します。UUIDへの変更による履歴の二重化を避けるため、この識別規則は維持しています。
@@ -81,13 +82,14 @@ GASの `/exec` へPOSTし、`Content-Type: text/plain;charset=UTF-8` のJSONを�
 | VRCAccounts | 所有者の表示情報 | なし |
 | VRCVisits | 自分の訪問・状態区間 | started_at_ms, last_seen_at_ms, ended_at_ms |
 | VRCEncounters | ユーザーとの重なり | started_at_ms, last_seen_at_ms, ended_at_ms, visit_started_at_ms, relation, other_instance_id |
+| VRCProfiles | Xプロフィール確認結果 | x_urls_json |
 | VRCSchema | 形式・移行情報 | name / value の組 |
 
 共通列は `record_id`, `revision`, `record_kind`, `account_id`, `observed_at_ms`, `display_name`, `presence`, `world_id`, `instance_id`, `world_name`, `payload_json`, `schema_version`, `operation`, `entity_id`, `received_at_ms`, `extensions_json`。日時はUnixミリ秒です。受信時刻と観測時刻を分離しています。
 
-`payload_json` が復元元で、その他の業務列はシート上での閲覧・集計用です。数式になりうる文字列をエスケープします。手編集の同期は未対応です。`VRCSchema` の形式番号・データセットID・移行完了フラグ、行ID・更新番号・JSON列、`SEQ_<datasetId>` プロパティは編集しないでください。7種類の記録の合計上限は50,000件です。
+`payload_json` が復元元で、その他の業務列はシート上での閲覧・集計用です。数式になりうる文字列をエスケープします。手編集の同期は未対応です。`VRCSchema` の形式番号・データセットID・移行完了フラグ、行ID・更新番号・JSON列、`SEQ_<datasetId>` プロパティは編集しないでください。8種類の記録の合計上限は50,000件です。
 
-画像、画像取得URL、Cookie、認証トークン、連絡先は同期データから分離します。画像は端末の別IndexedDBストアで管理し、GASの表を肥大化させません。
+Cookie・認証トークン・連絡先・収集設定は同期データから分離します。画像と画像URLは端末内のキャッシュにのみ保存し、同期しません。
 
 ## v1との移行・互換
 
@@ -102,3 +104,13 @@ GASの `/exec` へPOSTし、`Content-Type: text/plain;charset=UTF-8` のJSONを�
 `startedAt <= lastSeenAt <= observedAt` を満たします。終了が観測された区間は `endedAt` を持ち、`lastSeenAt <= endedAt <= observedAt` です。終了の確認時刻まで同席時間を延長せず、継続時間には最後に一致した `lastSeenAt` を使います。`observedAt` は終了を含む最終更新の観測時刻で、競合解決と保存期間整理に使います。
 
 `encounters.relation` は `instance` または `world`。`instance` は双方の空でないインスタンスIDの一致が必須です。所在非公開から同席レコードを作りません。レコードの追加はschemaVersion 2の新しい種類として通知し、旧GASへ未対応の種類を送信しません。クライアントが読む種類が増減したらカーソルを0から再確認し、旧カーソルより前にある新しい種類の行を取り逃がさないようにします。
+
+## Xプロフィールと全期間の保存（v0.8.0）
+
+HTTP protocolとrecord schemaは2のまま、hello.kindsにprofilesを追加します。新しいkindの取得を開始するときはカーソルを0に戻します。旧クライアントへ未対応のkindを返しません。
+
+`profiles:<accountId>:<userId>` は確認日時と、明示的に公開された正規化済み `https://x.com/<handle>` を最大5個保存します。URLがなくなった場合も空配列の更新を送信します。画像本体と画像URLはローカルキャッシュ専用で、同期対象に含みません。
+
+送信済み受領情報はレコード内容のSHA-256を保存します。送受信は1要求100件、1回の処理は送信・受信それぞれ最大10バッチ／約120秒で区切り、残りがあれば再開します。
+
+hello.retentionDaysは0（期限なし）または1〜365。pushは期間外の記録も保存し、日次pruneだけが指定された観測履歴の整理を行います。profilesは最新の確認結果として日次の期間削除から除外します。ローカルの保存期間はクラウドの期限と独立しています。

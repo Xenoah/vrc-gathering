@@ -1,4 +1,6 @@
-import { canonical, normalizeRecord, normalizeEnvelope, mergeRecord, SYNC_BATCH_SIZE, SYNC_KINDS, LEGACY_SYNC_KINDS } from './sync-format.js';
+import { canonical, normalizeRecord, normalizeEnvelope, mergeRecord, SYNC_BATCH_SIZE, SYNC_KINDS, LEGACY_SYNC_KINDS, ARCHIVE_KINDS } from './sync-format.js';
+
+async function receipt(record){const data=new TextEncoder().encode(canonical(record.value));return 'sha256:'+ [...new Uint8Array(await crypto.subtle.digest('SHA-256',data))].map(n=>n.toString(16).padStart(2,'0')).join('');}
 
 export function syncSettings(input = {}) {
   const endpoint = typeof input.endpoint === 'string' ? input.endpoint.trim() : '';
@@ -108,7 +110,7 @@ export function createSync({ storage, exportRecords, mergeRecords, updateAccount
     const status = { ...state, phase: 'syncing', message:'Googleへの接続権限を確認中…',stage:'permission',progressAt:now(),lastAttemptAt: now(), retryAt: 0, serverRetryAt:0, lastResponse:null };
     await storage.set({ cloudState: status });
     const deadline = now() + 120000;
-    let uploaded = 0, downloaded = 0, pending = false, protocol = 2, supportedKinds=LEGACY_SYNC_KINDS;
+    let uploaded = 0, downloaded = 0, pending = false, protocol = 2, supportedKinds=LEGACY_SYNC_KINDS,retentionDays=null,upgradeRequired=true;
     async function progress(stage,message){Object.assign(status,{stage,message,progressAt:now()});await storage.set({cloudState:status});}
     async function request(body){
       await progress(body.action,{hello:'GASへの接続を確認中…',push:'GASへ記録を送信中…',pull:'GASから記録を受信中…'}[body.action]);
@@ -120,8 +122,10 @@ export function createSync({ storage, exportRecords, mergeRecords, updateAccount
       try {
         const hello=await request({action:'hello'});
         validateHello(hello);
+        retentionDays=Number.isInteger(hello.retentionDays)?hello.retentionDays:null;
         if(Array.isArray(hello.kinds))supportedKinds=SYNC_KINDS.filter(kind=>hello.kinds.includes(kind));
         if(!supportedKinds.length)throw Error('同期サーバーに対応する記録形式がありません。');
+        upgradeRequired=retentionDays===null||!SYNC_KINDS.every(kind=>supportedKinds.includes(kind));
         if (checkpoint.datasetId !== hello.datasetId) {checkpoint.cursor=0;checkpoint.receipts={};checkpoint.datasetId=hello.datasetId;}
       } catch(error) {
         // Only the legacy implementation's explicit unsupported request response permits fallback.
@@ -130,8 +134,11 @@ export function createSync({ storage, exportRecords, mergeRecords, updateAccount
         if(checkpoint.datasetId){checkpoint.cursor=0;checkpoint.receipts={};delete checkpoint.datasetId;}
       }
       status.protocol=protocol;
-      if(canonical(checkpoint.kinds || LEGACY_SYNC_KINDS)!==canonical(supportedKinds))checkpoint.cursor=0;
+      // Older GAS acknowledged out-of-retention records without storing them. Re-send after
+      // a capability/retention change instead of trusting those historical acknowledgements.
+      if(canonical(checkpoint.kinds || LEGACY_SYNC_KINDS)!==canonical(supportedKinds)||checkpoint.retentionDays!==retentionDays){checkpoint.cursor=0;checkpoint.receipts={};}
       checkpoint.kinds=supportedKinds;
+      checkpoint.retentionDays=retentionDays;
       await progress('export','この端末の送信対象を読み込み中…');
       const local = await exportRecords();
       for (const [accountId, meta] of Object.entries(saved.accountMeta || {})) {
@@ -141,13 +148,14 @@ export function createSync({ storage, exportRecords, mergeRecords, updateAccount
       const keys = new Set(local.map(r => r.key));
       checkpoint.receipts = Object.fromEntries(Object.entries(checkpoint.receipts).filter(([key]) => keys.has(key)));
       const unsupported=local.filter(r=>!supportedKinds.includes(r.kind)).length;
-      const outgoing = local.filter(r => supportedKinds.includes(r.kind) && checkpoint.receipts[r.key] !== canonical(r.value));
+      const hashes=new Map(await Promise.all(local.map(async r=>[r.key,await receipt(r)])));
+      const outgoing = local.filter(r => supportedKinds.includes(r.kind) && checkpoint.receipts[r.key] !== hashes.get(r.key));
       let sent = 0;
       for (; sent < outgoing.length && sent < SYNC_BATCH_SIZE * 10 && now() < deadline; sent += SYNC_BATCH_SIZE) {
         const batch = outgoing.slice(sent, sent + SYNC_BATCH_SIZE);
         const response = await request({action:'push', records:batch});
         if (response.accepted !== batch.length) throw Error('同期サーバーの保存件数が一致しません。');
-        for (const record of batch) checkpoint.receipts[record.key] = canonical(record.value);
+        for (const record of batch) checkpoint.receipts[record.key] = hashes.get(record.key);
         uploaded += batch.length;
         await storage.set({cloudCheckpoint:checkpoint});
       }
@@ -159,7 +167,7 @@ export function createSync({ storage, exportRecords, mergeRecords, updateAccount
         if (!Array.isArray(response.records) || response.records.length > SYNC_BATCH_SIZE ||
             !Number.isSafeInteger(response.cursor) || response.cursor < checkpoint.cursor || typeof response.hasMore !== 'boolean' ||
             (response.hasMore && response.cursor <= checkpoint.cursor)) throw Error('同期サーバーのページ情報が不正です。');
-        const records = response.records.map(r => normalizeEnvelope(r, now())).filter(r => r.value.observedAt >= cutoff);
+        const records = response.records.map(r => normalizeEnvelope(r, now())).filter(r => ARCHIVE_KINDS.includes(r.kind)||r.value.observedAt >= cutoff);
         await progress('merge','受信した記録をこの端末へ保存中…');
         await mergeRecords(records.filter(r => r.kind !== 'accounts'));
         await updateAccounts(accounts => {
@@ -176,17 +184,17 @@ export function createSync({ storage, exportRecords, mergeRecords, updateAccount
         return accounts;
         });
         // Imported rows may have lost a conflict to a newer local row. Only matching values are acknowledged.
-        const merged = await exportRecords();
+        const merged = await exportRecords({keys:records.map(r=>r.key)});
         const received = new Map(records.map(r => [r.key, canonical(r.value)]));
-        for (const record of merged) if (received.get(record.key) === canonical(record.value)) checkpoint.receipts[record.key] = canonical(record.value);
+        for (const record of merged) if (received.get(record.key) === canonical(record.value)) checkpoint.receipts[record.key] = await receipt(record);
         checkpoint.cursor = response.cursor;
         await storage.set({cloudCheckpoint:checkpoint});
         downloaded += records.length;
         more = response.hasMore;
       }
       pending ||= more;
-      await storage.set({cloudState:{...status, phase:pending ? 'pending' : 'ready',stage:pending?'pending':'complete', lastError:'',lastErrorAt:null, lastSuccessAt:pending ? state.lastSuccessAt || null : now(), failures:0,
-        uploaded, downloaded, unsupported, message:(pending ? `同期の続きがあります（送信 ${uploaded} / 受信 ${downloaded}件）。次回続行します。` : `同期完了：送信 ${uploaded} / 受信 ${downloaded}件${protocol===1 ? ' · 旧GAS互換モード（GAS更新を推奨）' : ''}`)+(unsupported?` 訪問・同席履歴 ${unsupported}件は端末内に保存しています。同期にはGASの2ファイルを更新し、setup・再デプロイしてください。`:'')}});
+      await storage.set({cloudState:{...status, phase:pending ? 'pending' : upgradeRequired?'partial':'ready',stage:pending?'pending':upgradeRequired?'upgrade':'complete', lastError:'',lastErrorAt:null, lastSuccessAt:pending||upgradeRequired ? state.lastSuccessAt || null : now(), failures:0,
+        uploaded, downloaded, unsupported,retentionDays,upgradeRequired, message:(pending ? `同期の続きがあります（送信 ${uploaded} / 受信 ${downloaded}件）。次回続行します。` : `${unsupported?'一部の記録は未同期':upgradeRequired?'旧GASとの互換同期':'同期完了'}：送信 ${uploaded} / 受信 ${downloaded}件${protocol===1 ? ' · 旧GAS互換モード（GAS更新を推奨）' : ''}`)+(unsupported?` GAS未対応の記録 ${unsupported}件（訪問・同席・Xリンクなど）は未送信です。GASの2ファイルを更新し、setup・再デプロイしてください。`:upgradeRequired?' 全収集データの保存にはGASのCode.gs・Protocol.gsの更新、setup・再デプロイが必要です。':'')+(retentionDays>0?` GASは${retentionDays}日で整理します。全期間を保管する場合はRETENTION_DAYSを0に設定してください。`:'')}});
       return {uploaded, downloaded, pending, unsupported};
     } catch (error) {
       const failures = (state.failures || 0) + 1;

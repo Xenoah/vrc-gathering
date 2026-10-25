@@ -3,7 +3,8 @@ export const SYNC_PROTOCOL = 2;
 export const RECORD_SCHEMA = 2;
 export const SYNC_BATCH_SIZE = 100;
 export const LEGACY_SYNC_KINDS = ['friends', 'events', 'worlds', 'runs', 'accounts'];
-export const SYNC_KINDS = [...LEGACY_SYNC_KINDS, 'visits', 'encounters'];
+export const SYNC_KINDS = [...LEGACY_SYNC_KINDS, 'visits', 'encounters', 'profiles'];
+export const ARCHIVE_KINDS = ['profiles'];
 export function canonical(value) {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
   if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canonical(value[k])).join(',') + '}';
@@ -66,6 +67,12 @@ export function normalizeRecord(kind, input, now = Date.now()) {
       Object.assign(value,{userId:input.userId,visitStartedAt,relation:input.relation,otherInstanceId});
       key=input.userId+':'+startedAt;
     }
+  } else if(kind==='profiles') {
+    if(!id(input.userId)||!Array.isArray(input.urls)||input.urls.length>5)throw Error('SCHEMA');
+    const reserved=['home','i','intent','share','search','explore','notifications','messages','settings','login','logout','signup','account','compose','hashtag','tos','privacy','about','download','jobs','ads','oauth','communities','lists','topics','spaces','help','support'];
+    const urls=[...new Set(input.urls)];
+    if(urls.some(url=>typeof url!=='string'||!/^https:\/\/x\.com\/[a-z0-9_]{1,15}$/.test(url)||reserved.includes(url.slice(14))))throw Error('SCHEMA');
+    value={accountId,userId:input.userId,observedAt,urls};key=input.userId;
   } else {
     value = { accountId, observedAt, displayName: str(input.displayName,128) || accountId };
     key = accountId;

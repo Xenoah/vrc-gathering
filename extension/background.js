@@ -5,11 +5,31 @@ import { createSync, syncSettings, createAccountUpdater, CLOUD_ORIGINS, serverRe
 import { resolveSettingsBackup } from './settings-backup.js';
 import { reconcileConnections } from './connections.js';
 import { extractXProfiles, readXCache, writeXCache, X_CACHE_TTL } from './x-profile.js';
+import { normalizeRecord, mergeRecord } from './sync-format.js';
 
 const updateAccounts = createAccountUpdater(chrome.storage.local);
-const cloud = createSync({ storage:chrome.storage.local, exportRecords:exportSyncRecords, mergeRecords:mergeSyncRecords, updateAccounts, hasPermission:()=>chrome.permissions.contains({origins:CLOUD_ORIGINS}) });
+let profileWrites=Promise.resolve();
+function mergeProfiles(records){
+  const work=profileWrites.then(async()=>{
+    let cache=(await chrome.storage.local.get('xProfileCache')).xProfileCache||{};
+    for(const record of records){const v=record.value,old=readXCache(cache,v.accountId,v.userId),prior=old?normalizeRecord('profiles',{...old,observedAt:old.checkedAt}):null,merged=mergeRecord(record,prior).value;
+      cache=writeXCache(cache,{accountId:merged.accountId,userId:merged.userId,checkedAt:merged.observedAt,urls:merged.urls});}
+    await chrome.storage.local.set({xProfileCache:cache});
+  });profileWrites=work.catch(()=>{});return work;
+}
+async function exportCollected(options){
+  const rows=await exportSyncRecords(options),cache=(await chrome.storage.local.get('xProfileCache')).xProfileCache||{};
+  for(const entry of Object.values(cache)){const profile=readXCache(cache,entry?.accountId,entry?.userId);if(profile){const record=normalizeRecord('profiles',{...profile,observedAt:profile.checkedAt});if(!options?.keys||options.keys.includes(record.key))rows.push(record);}}
+  return rows;
+}
+async function mergeCollected(records){
+  await mergeSyncRecords(records.filter(r=>r.kind!=='profiles'));
+  const profiles=records.filter(r=>r.kind==='profiles');if(profiles.length)await mergeProfiles(profiles);
+}
+const cloud = createSync({ storage:chrome.storage.local, exportRecords:exportCollected, mergeRecords:mergeCollected, updateAccounts, hasPermission:()=>chrome.permissions.contains({origins:CLOUD_ORIGINS}) });
 const CLOUD_ALARM = 'vrc-observer-cloud';
-const syncQuietly = () => cloud.sync().catch(() => {});
+async function runCloud(options){const outcome=await cloud.sync(options);if(!outcome.skipped&&(await chrome.storage.local.get('cloudSync')).cloudSync?.enabled)await chrome.alarms.create(CLOUD_ALARM,{periodInMinutes:outcome.pending?1:5});return outcome;}
+const syncQuietly = () => runCloud().catch(() => {});
 
 const ALARM = 'vrc-observer-next', MAINTENANCE = 'vrc-observer-prune';
 const API = 'https://vrchat.com/api/1';
@@ -224,7 +244,8 @@ async function lookupXProfile({accountId,userId,force=false}) {
     if(after.id!==accountId)throw Error('取得中にアカウントが切り替わったため、プロフィールを保存しませんでした。');
     abort.signal.throwIfAborted();
     const entry={accountId,userId,urls,checkedAt:Date.now()};
-    await chrome.storage.local.set({xProfileCache:writeXCache(cache,entry)});
+    await mergeProfiles([normalizeRecord('profiles',{...entry,observedAt:entry.checkedAt})]);
+    void syncQuietly();
     return {ok:true,profile:entry};
   })().catch(async error=>{
     if(error.status===429 || error.retryAfter!=null){const s=await state();await patchState({cooldownUntil:Math.max(s.cooldownUntil||0,Date.now()+retryDelay(error.retryAfter,Date.now(),1))});}
@@ -274,7 +295,7 @@ async function command(message) {
     finally{imageCollector.resume();}
   }
   if (message.type === 'TEST_SYNC') { return {ok:true,...await cloud.testConnection()}; }
-  if (message.type === 'SYNC') { return {ok:true, ...await cloud.sync({force:message.force === true})}; }
+  if (message.type === 'SYNC') { return {ok:true, ...await runCloud({force:message.force === true})}; }
   if (message.type === 'SAVE_SYNC') {
     await cloud.pause();
     let syncAfterSave=false;

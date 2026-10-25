@@ -24,9 +24,15 @@
 - 取得間隔のランダム化、レート制御、429のRetry-Afterと指数バックオフ。
 - Windowsログオン時のChrome起動用スクリプトを同梱。
 
+## v0.8.0の更新
+
+遷移図に光点の方向アニメーション、現在滞在人数に応じた点のサイズ、頻出経路の黄〜赤表示、通常ホイールでのズームを追加しました。「移動中」はネットワークから除外し、「プライベート」「現実世界」と表示します。
+
+**XリンクもSheetsへ同期するため、GASのCode.gsとProtocol.gsの更新が必要です。** 全期間保管する場合は `RETENTION_DAYS=0` にし、`setup` 実行後に新バージョンで再デプロイしてください。[更新手順](gas/README.md)
+
 ## インストール
 
-1. [Releases](https://github.com/Xenoah/vrc-gathering/releases) の `vrc-gathering-v0.7.0.zip` をダウンロードし、固定フォルダーへ展開します。
+1. [Releases](https://github.com/Xenoah/vrc-gathering/releases) の `vrc-gathering-v0.8.0.zip` をダウンロードし、固定フォルダーへ展開します。
 2. Chromeの `chrome://extensions` で「デベロッパーモード」を有効にします。
 3. 「パッケージ化されていない拡張機能を読み込む」から、展開先の **`extension`** フォルダーを選びます。
 4. 同じChromeプロファイルで [vrchat.com](https://vrchat.com/home) にログインします。
@@ -38,7 +44,7 @@
 
 取得するのは自分のアカウントから見える情報です。所在非公開はそのまま記録します。定期観測なので、取得間隔の間やPCスリープ中の移動は復元できません。記録はChromeプロファイル内に保存され、拡張・プロファイルの削除で失われるため、必要な履歴はエクスポートしてください。
 
-v0.7.0は個人用の非公式ツールです。**121件のNode.jsテスト・GAS構文検査・配布ZIP生成、Chromiumでの画面・IndexedDB検証に合格しています。WindowsのChrome拡張としての実機動作、実際のVRChatログイン、および公開済みGASへの接続は未検証です。** 検証記録は [VALIDATION.md](VALIDATION.md) に記載しています。
+v0.8.0は個人用の非公式ツールです。**128件のNode.jsテスト・GAS構文検査・配布ZIP生成、Chromiumでの画面・IndexedDB検証に合格しています。WindowsのChrome拡張としての実機動作、実際のVRChatログイン、および公開済みGASへの接続は未検証です。** 検証記録は [VALIDATION.md](VALIDATION.md) に記載しています。
 
 ## 開発・配布
 
@@ -72,3 +78,5 @@ GASの初期設定は `createSyncToken` でキーを生成し、`setup` で設�
 v0.6.0の分析ラボは保存済み記録を端末内で集計します。v0.5.0用GASからの追加更新は不要です。分析の一覧・指標の意味は [README_ja.md](README_ja.md#分析ラボ31種類の分析) を参照してください。操作検証は `python3 tests/analysis_lab_browser_smoke.py` です。
 
 UIの可視化・キーボード操作・390〜1600pxのレイアウト検証は `python3 tests/dashboard_ui_browser_smoke.py` です。v0.7.0では31分析の集計内容・GAS・記録形式・設定の保存先を維持し、グラフと折りたたみ式データ表を追加しました。
+
+Xリンクを含む8種類の記録を同期します。画像と画像URLは従来どおりローカルキャッシュにのみ保存します。通常ホイール・光点停止は `python3 tests/network_browser_smoke.py` で検証できます。

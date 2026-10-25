@@ -1,16 +1,16 @@
 /* Deploy with Protocol.gs. Authentication precedes all spreadsheet access. */
-const TABLES = {friends:'VRCFriends',events:'VRCEvents',worlds:'VRCWorlds',runs:'VRCRuns',accounts:'VRCAccounts',visits:'VRCVisits',encounters:'VRCEncounters'};
+const TABLES = {friends:'VRCFriends',events:'VRCEvents',worlds:'VRCWorlds',runs:'VRCRuns',accounts:'VRCAccounts',visits:'VRCVisits',encounters:'VRCEncounters',profiles:'VRCProfiles'};
 const LEGACY_HEADERS = ['key','version','kind','accountId','observedAt','displayName','presence','worldId','instanceId','worldName','payload'];
 const HEADERS = ['record_id','revision','record_kind','account_id','observed_at_ms','display_name','presence','world_id','instance_id','world_name','payload_json','schema_version','operation','entity_id','received_at_ms','extensions_json'];
-const FIELDS = {friends:['platform','state_first_observed_at_ms','is_friend'],events:['event_kind','previous_observed_at_ms','previous_world_id','previous_instance_id'],worlds:['author_name','capacity'],runs:['started_at_ms','completed_at_ms','observed_count','changed_count'],accounts:[],visits:['started_at_ms','last_seen_at_ms','ended_at_ms'],encounters:['started_at_ms','last_seen_at_ms','ended_at_ms','visit_started_at_ms','relation','other_instance_id']};
+const FIELDS = {friends:['platform','state_first_observed_at_ms','is_friend'],events:['event_kind','previous_observed_at_ms','previous_world_id','previous_instance_id'],worlds:['author_name','capacity'],runs:['started_at_ms','completed_at_ms','observed_count','changed_count'],accounts:[],visits:['started_at_ms','last_seen_at_ms','ended_at_ms'],encounters:['started_at_ms','last_seen_at_ms','ended_at_ms','visit_started_at_ms','relation','other_instance_id'],profiles:['x_urls_json']};
 const MAX_RECORDS = 50000;
 function configuration_(detailed = false) {
   const props=PropertiesService.getScriptProperties(), spreadsheetId=(props.getProperty('SPREADSHEET_ID') || '').trim(),token=props.getProperty('SYNC_TOKEN');
-  const days=Number(props.getProperty('RETENTION_DAYS') || 30);
+  const days=Number(props.getProperty('RETENTION_DAYS') || 0);
   function invalid(message) { throw Error(detailed ? message : 'CONFIG'); }
   if (!spreadsheetId) invalid('SPREADSHEET_ID が未設定です。スクリプトプロパティにスプレッドシートIDを設定してください。');
   if (!/^[A-Za-z0-9_-]{32,256}$/.test(token || '')) invalid('SYNC_TOKEN は32〜256文字の英数字・ハイフン・アンダースコアにしてください（現在 '+(token || '').length+' 文字）。createSyncToken を実行すると生成できます。');
-  if (!Number.isInteger(days) || days<1 || days>365) invalid('RETENTION_DAYS は1〜365の整数にしてください。未設定の場合は30日です。');
+  if (!Number.isInteger(days) || days<0 || days>365) invalid('RETENTION_DAYS は0〜365の整数にしてください。0または未設定は全期間を保管します。');
   return {props,spreadsheetId,token,days};
 }
 function writeValues_(sheet,start,values) {
@@ -33,7 +33,7 @@ function rows_(sheet,width) {
 function safeCell_(value) {const s=String(value == null?'':value);return /^[\s\uFEFF]*[=+@-]|^[\t\r\n]/.test(s)?"'"+s:s;}
 function row_(record,revision,receivedAt) {
   const v=record.value,s=record.kind==='events'?v.current:v;
-  const extra={friends:[v.platform,v.stateFirstObservedAt,v.isFriend],events:[v.kind,v.previousObservedAt,v.previous?.location?.worldId,v.previous?.location?.instanceId],worlds:[v.authorName,v.capacity],runs:[v.startedAt,v.completedAt,v.observedCount,v.changedCount],accounts:[],visits:[v.startedAt,v.lastSeenAt,v.endedAt],encounters:[v.startedAt,v.lastSeenAt,v.endedAt,v.visitStartedAt,v.relation,v.otherInstanceId]}[record.kind];
+  const extra={friends:[v.platform,v.stateFirstObservedAt,v.isFriend],events:[v.kind,v.previousObservedAt,v.previous?.location?.worldId,v.previous?.location?.instanceId],worlds:[v.authorName,v.capacity],runs:[v.startedAt,v.completedAt,v.observedCount,v.changedCount],accounts:[],visits:[v.startedAt,v.lastSeenAt,v.endedAt],encounters:[v.startedAt,v.lastSeenAt,v.endedAt,v.visitStartedAt,v.relation,v.otherInstanceId],profiles:[canonical(v.urls)]}[record.kind];
   return [record.key,revision,record.kind,v.accountId,v.observedAt,safeCell_(v.displayName||v.name),safeCell_(s.presence),
     safeCell_(s.location?.worldId||(record.kind==='worlds'?v.id:'')),safeCell_(s.location?.instanceId),safeCell_(record.kind==='worlds'?v.name:''),
     canonical(v),2,'upsert',v.id||v.userId||(record.kind==='runs'?String(v.startedAt):v.accountId),receivedAt,canonical(v.extensions||{}),
@@ -94,18 +94,18 @@ function doPost(event){
     if(![1,2].includes(request.protocol)||!['hello','push','pull'].includes(request.action))throw Error('REQUEST');
     protocol=request.protocol;
     lock=LockService.getScriptLock();if(!lock.tryLock(10000))throw Error('BUSY');
-    const db=database_(config),now=Date.now(),cutoff=now-config.days*86400000;
-    if(request.action==='hello')return json_({ok:true,datasetId:db.datasetId,protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:SYNC_KINDS,maxBatch:SYNC_BATCH_SIZE,serverTime:now},protocol);
+    const db=database_(config),now=Date.now(),cutoff=config.days?now-config.days*86400000:0;
+    if(request.action==='hello')return json_({ok:true,datasetId:db.datasetId,protocols:[1,2],recordSchemas:[1,2],operations:['upsert'],kinds:SYNC_KINDS,maxBatch:SYNC_BATCH_SIZE,serverTime:now,retentionDays:config.days},protocol);
     if(protocol===2&&request.datasetId!==db.datasetId)throw Error('DATASET');
     if(request.action==='push'){
       if(!Array.isArray(request.records)||request.records.length>SYNC_BATCH_SIZE)throw Error('REQUEST');
       const records=request.records.map(r=>normalizeEnvelope(r,now));
       const positions=new Map(db.rows.map(r=>[r[0],true]));
-      if(db.rows.length+new Set(records.filter(r=>r.value.observedAt>=cutoff&&!positions.has(r.key)).map(r=>r.key)).size>MAX_RECORDS)throw Error('LIMIT');
+      if(db.rows.length+new Set(records.filter(r=>!positions.has(r.key)).map(r=>r.key)).size>MAX_RECORDS)throw Error('LIMIT');
       let sequence=db.sequence;
       const writes=[];
       for(const kind of SYNC_KINDS){const t=db.tables[kind],indexes=new Map(t.rows.map((r,i)=>[r[0],i])),changes=new Map();
-        for(const record of records.filter(r=>r.kind===kind&&r.value.observedAt>=cutoff)){
+        for(const record of records.filter(r=>r.kind===kind)){
           const i=indexes.get(record.key),old=i==null?null:normalizeRecord(kind,JSON.parse(t.rows[i][10]),now),merged=mergeRecord(record,old);
           if(old&&canonical(merged.value)===canonical(old.value))continue;
           const index=i==null?t.rows.length:i,next=row_(merged,++sequence,now);
@@ -121,7 +121,7 @@ function doPost(event){
     if(!Number.isSafeInteger(request.cursor)||request.cursor<0||request.cursor>db.sequence||!Number.isInteger(request.limit)||request.limit<1||request.limit>SYNC_BATCH_SIZE)throw Error('REQUEST');
     const kinds=protocol===2 && request.kinds!==undefined ? request.kinds : LEGACY_SYNC_KINDS;
     if(!Array.isArray(kinds) || !kinds.length || kinds.length>SYNC_KINDS.length || kinds.some(kind=>!SYNC_KINDS.includes(kind)))throw Error('REQUEST');
-    const candidates=db.rows.filter(r=>kinds.includes(r[2])&&Number(r[1])>request.cursor&&Number(r[4])>=cutoff).sort((a,b)=>Number(a[1])-Number(b[1]));
+    const candidates=db.rows.filter(r=>kinds.includes(r[2])&&Number(r[1])>request.cursor&&(ARCHIVE_KINDS.includes(r[2])||Number(r[4])>=cutoff)).sort((a,b)=>Number(a[1])-Number(b[1]));
     const selected=candidates.slice(0,request.limit),hasMore=candidates.length>selected.length;
     return json_({ok:true,datasetId:db.datasetId,records:selected.map(r=>({...normalizeRecord(r[2],JSON.parse(r[10]),now),revision:Number(r[1])})),cursor:hasMore?Number(selected[selected.length-1][1]):db.sequence,hasMore},protocol);
   }catch(error){return json_({ok:false,code:['AUTH','CONFIG','BUSY','LIMIT','REQUEST','SCHEMA','DATASET','MIGRATION'].includes(error.message)?error.message:'SERVER'},protocol);}
@@ -147,13 +147,14 @@ function createSyncToken() {
 }
 function setup(){
   const lock=LockService.getScriptLock();if(!lock.tryLock(10000))throw Error('BUSY');
-  try{database_(configuration_(true));if(!ScriptApp.getProjectTriggers().some(t=>t.getHandlerFunction()==='pruneRecords'))ScriptApp.newTrigger('pruneRecords').timeBased().everyDays(1).create();return '7種類の記録テーブルとVRCSchema、日次整理を設定しました。旧VRCRecordsは移行元として残しています。';}
+  try{database_(configuration_(true));if(!ScriptApp.getProjectTriggers().some(t=>t.getHandlerFunction()==='pruneRecords'))ScriptApp.newTrigger('pruneRecords').timeBased().everyDays(1).create();return '8種類の記録テーブルとVRCSchema、日次整理を設定しました。旧VRCRecordsは移行元として残しています。';}
   finally{lock.releaseLock();}
 }
 function pruneRecords(){
   const lock=LockService.getScriptLock();if(!lock.tryLock(10000))return;
-  try{const config=configuration_(),db=database_(config),cutoff=Date.now()-config.days*86400000;
+  try{const config=configuration_(),db=database_(config),cutoff=config.days?Date.now()-config.days*86400000:0;
     config.props.setProperty(db.seqKey,String(db.sequence));
-    for(const t of Object.values(db.tables))for(let i=t.rows.length-1;i>=0;){if(Number(t.rows[i][4])>=cutoff){i--;continue;}const end=i;while(i>=0&&Number(t.rows[i][4])<cutoff)i--;t.sheet.deleteRows(i+3,end-i);}
+    // Latest profile checks are snapshots, independent of observation-history retention.
+    for(const [kind,t] of Object.entries(db.tables).filter(([kind])=>!ARCHIVE_KINDS.includes(kind)))for(let i=t.rows.length-1;i>=0;){if(Number(t.rows[i][4])>=cutoff){i--;continue;}const end=i;while(i>=0&&Number(t.rows[i][4])<cutoff)i--;t.sheet.deleteRows(i+3,end-i);}
   }finally{lock.releaseLock();}
 }

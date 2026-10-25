@@ -48,9 +48,9 @@ export function classifyActivity(state) {
   return 'unknown';
 }
 export const ACTIVITY_LABELS = {
-  world: 'ゲーム内：公開ワールド', private: 'ゲーム内：所在非公開',
+  world: 'ゲーム内：公開ワールド', private: 'ゲーム内：プライベート',
   traveling: 'ゲーム内：移動中', 'online-unknown': 'ゲーム内：所在不明',
-  active: 'Web／アプリ', offline: 'オフライン', removed: '名簿から消失', unknown: '不明'
+  active: 'Web／アプリ', offline: '現実世界', removed: '名簿から消失', unknown: '不明'
 };
 
 export function buildActivityTimeline(friends, events, worlds, {

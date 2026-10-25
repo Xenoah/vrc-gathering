@@ -61,7 +61,7 @@ export function sortWorlds(rows, order) {
   const compare={count:(a,b)=>b.count-a.count,instances:(a,b)=>b.instances-a.instances,latest:(a,b)=>b.observedAt-a.observedAt,name:(a,b)=>compareText(a.name,b.name)}[order]||((a,b)=>b.count-a.count);
   return [...rows].sort((a,b)=>compare(a,b)||compareText(a.name,b.name)||compareText(a.id,b.id));
 }
-export const PLACE_LABELS = {private:'所在非公開',offline:'オフライン',traveling:'移動中',web:'Web／アプリ',unknown:'所在不明',removed:'名簿から消失'};
+export const PLACE_LABELS = {private:'プライベート',offline:'現実世界',traveling:'移動中',web:'Web／アプリ',unknown:'所在不明',removed:'名簿から消失'};
 export function worldNetwork(events, friends, worlds, {since=0,userId='',query='',order='moves',now=Date.now(),pollSeconds=180}={}) {
   const names=new Map(worlds.map(w=>[w.id,w.name])),people=new Map(friends.map(f=>[f.id,f.displayName])),grouped=new Map();
   for(const e of events){if(!people.has(e.userId))people.set(e.userId,e.displayName);if(!grouped.has(e.userId))grouped.set(e.userId,[]);grouped.get(e.userId).push(e);}
@@ -70,18 +70,21 @@ export function worldNetwork(events, friends, worlds, {since=0,userId='',query='
   function place(p,uid,at){const id=key(p);if(!nodes.has(id))nodes.set(id,{id,kind:p.kind,name:p.kind==='world'?names.get(p.worldId)||p.worldId:PLACE_LABELS[p.kind],users:new Set(),currentUsers:new Set(),observedAt:0,moves:0});const n=nodes.get(id);n.users.add(uid);n.observedAt=Math.max(n.observedAt,at);return n;}
   for(const [uid,name] of people){if(userId && uid!==userId)continue;
     const journey=worldJourney(grouped.get(uid)||[],uid,{since,limit:Infinity});
-    for(const p of journey.nodes)place(p,uid,p.lastObservedAt);
-    for(let i=1;i<journey.nodes.length;i++){
-      const a=journey.nodes[i-1],b=journey.nodes[i],from=key(a),to=key(b),id=from+'>'+to;
+    // Travel is a transient API state. Join the known endpoints without inventing an intervening world.
+    const stops=journey.nodes.filter(p=>p.kind!=='traveling');
+    for(const p of stops)place(p,uid,p.lastObservedAt);
+    for(let i=1;i<stops.length;i++){
+      const a=stops[i-1],b=stops[i],from=key(a),to=key(b),id=from+'>'+to;
+      if(from===to && a.instanceId===b.instanceId)continue;
       if(!edges.has(id))edges.set(id,{id,from,to,transitions:[],users:new Set(),observedAt:0});
       const edge=edges.get(id);edge.users.add(uid);edge.observedAt=Math.max(edge.observedAt,b.observedAt);
       edge.transitions.push({userId:uid,displayName:name,previousAt:a.lastObservedAt,observedAt:b.observedAt,fromInstance:a.instanceId,toInstance:b.instanceId});
       nodes.get(from).moves++;if(from!==to)nodes.get(to).moves++;
     }
-    if(journey.nodes.length)users.add(uid);
+    if(stops.length)users.add(uid);
   }
   // Include users with a current snapshot but no change event in the chosen period.
-  for(const f of friends){if(userId&&f.id!==userId||f.observedAt<since)continue;const n=place(destination(f),f.id,f.observedAt);users.add(f.id);
+  for(const f of friends){if(userId&&f.id!==userId||f.observedAt<since||destination(f).kind==='traveling')continue;const n=place(destination(f),f.id,f.observedAt);users.add(f.id);
     if(f.isFriend && f.presence==='online' && f.location?.kind==='world' && now-f.observedAt>=0 && now-f.observedAt<=Math.max(pollSeconds*2.2,120)*1000)n.currentUsers.add(f.id);
   }
   const q=query.trim().toLocaleLowerCase(),matches=n=>!q||[n.id,n.name,...[...n.users].map(id=>people.get(id)||id)].join(' ').toLocaleLowerCase().includes(q);
