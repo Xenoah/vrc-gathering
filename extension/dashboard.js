@@ -16,6 +16,7 @@ import {xConcurrency,MAX_X_CONCURRENCY,xScope,xBulkScope} from './x-follower-set
 import { X_FOLLOWER_ORIGINS, followerRecords, bestFollowerMetric, followerText } from './x-followers.js';
 import { createUserNotesView } from './user-notes-ui.js';
 import { createXProfileView } from './x-profile-ui.js';
+import {createFollowerHistogram} from './x-follower-histogram-ui.js';
 import { createGameLogView } from './game-log-ui.js';
 import { buildAnalysisReport, DAY } from './analysis-lab.js';
 import { lineChart, barChart, donutChart, columnChart } from './charts.js';
@@ -40,6 +41,7 @@ const connections=createConnectionsView({node,date,avatar,imageFor:(kind,id)=>im
 const analysisLab=createAnalysisLab({node,date,download,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const research=createResearchView({root:$('researchPanel'),isDemo,imageFor:(kind,id)=>imageElements.get(kind+':'+id)});
 const xProfileView=createXProfileView({node,date,request:message=>chrome.runtime.sendMessage(message),isOpen:()=>$('detail').open,getFollower:(accountId,url)=>xMetrics['xFollowers:'+accountId+':'+url.slice(14)],followersEnabled:()=>xFollowerConfig.enabled===true,enableFollowers:enableXFollowers,getQueue:()=>xFollowerQueue});
+const xHistogram=createFollowerHistogram({root:$('xFollowerHistogram'),node,date,download});
 const gameLog=createGameLogView({root:$('gameLogPanel'),request:message=>chrome.runtime.sendMessage(message),download,isDemo});
 const userNotes=createUserNotesView({root:$('userNotes'),request:message=>chrome.runtime.sendMessage(message),isOpen:()=>$('detail').open,sync:syncView});
 function avatar(kind,id,name) {
@@ -415,7 +417,7 @@ async function load() {
   $('xFollowerAccountField').hidden=$('xFollowerScope').value!=='all';
   const xOwner=[...$('account').options].find(o=>o.value===xFollowerConfig.accountId)?.textContent||xFollowerConfig.accountId||'未設定';
   $('xFollowerStatus').textContent=`保存済みのXアカウント：${Object.values(xMetrics).filter(v=>v.accountId===selectedAccount).length}件 · ${xFollowerConfig.enabled?'取得は有効':'取得は無効'} · ${xScope(xFollowerConfig.scope)==='all'?'開いたプロフィール全員／保存先：'+xOwner:'確認済みリンクのみ'}`;
-  renderSavedXProfiles();
+  renderSavedXProfiles();xHistogram.update(xMetrics,xProfiles,data.friends,selectedAccount);
   renderXCollection();xProfileView.refresh();userNotes.refresh(selectedAccount);gameLog.update(data,selectedAccount,logImportEpoch,instanceCollectionState,config);
   if(!imageDirty)$('imageEnabled').checked=imageConfig.enabled===true;
   $('imageStatus').textContent=`表示中のアカウント：${imageRows.filter(r=>r.blob).length}枚 · ${(imageRows.reduce((n,r)=>n+(r.bytes||0),0)/1048576).toFixed(1)}MiB · 未取得 ${imageRows.filter(r=>!r.blob||r.cachedUrl!==r.url).length}件`;
@@ -545,6 +547,7 @@ function renderSavedXProfiles(){
   if(!rows.length){const tr=node('tr'),td=node('td','このアカウント・検索条件の記録はありません。');td.colSpan=3;tr.append(td);body.append(tr);}
 }
 for(const id of ['xSavedSearch','xSavedSort'])$(id).addEventListener('input',renderSavedXProfiles);
+$('showXHistogram').onclick=()=>{tab('friends');$('xFollowerHistogram').open=true;$('xFollowerHistogram').scrollIntoView({block:'start'});};
 $('xSavedMore').onclick=()=>{xSavedLimit+=100;renderSavedXProfiles();};
 
 async function enableXFollowers(){
