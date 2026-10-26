@@ -18,6 +18,7 @@ export function createGameLogView({root,request,download,isDemo=false}){
     <p id="instanceRequestStatus" role="status"></p><dl class="instance-location"><div><dt>自分の最終観測</dt><dd id="instanceSelfPlace">未取得</dd></div><div><dt>インスタンス</dt><dd id="instanceSelfId">—</dd></div><div><dt>確認日時（JST）</dt><dd id="instanceSelfAt">—</dd></div></dl>
     <p id="instanceCollectionStatus" role="status"></p><div class="table-wrap"><table><thead><tr><th>参加者（自分を除く）</th><th>関係</th><th>この区間の観測開始（JST）</th></tr></thead><tbody id="instanceCurrentUsers"></tbody></table></div>
     <p class="muted">取得時点の一覧です。非フレンドも記録し、同じ場所・同じ相手の記録は観測時刻を更新します。収集停止中もこのボタンで1回取得できます。自動記録は上部の「収集を開始」から。</p>
+    <p class="muted">APIで現在地が取れない場合は、同じChromeで<a href="https://vrchat.com/home" target="_blank" rel="noopener noreferrer">公式Web</a>を開き、左側に自分のプロフィールと現在地カードを表示してください。カードのフレンド数は参加者数として扱いません。参加者一覧が返らなくても現在地は記録します。</p>
   </section>
   <div class="log-inputs"><p><strong>PCログの取り込み</strong>：参加・退出のログを使って、同席区間を記録します。</p>
     <div class="log-actions"><button id="chooseLogFolder">ログフォルダーを選択</button><button id="resumeLogWatch">監視を再開</button><button id="stopLogWatch">監視を停止</button><button id="chooseLogFiles">ログファイルを取り込む</button><input id="logFiles" type="file" accept=".txt,.log" multiple hidden></div>

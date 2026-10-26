@@ -40,7 +40,7 @@ export function collectionSeries(previous,{accountId,collectorId,pollSeconds,sam
   }
   // A complete scan can confirm that a previously seen world now has no observed friends.
   if(complete)for(const r of previous)if(r.kind==='crowd'&&r.value.collectorId===collectorId&&!r.value.endedAt&&!worlds.has(r.value.worldId))worlds.set(r.value.worldId,{count:0,instances:new Set()});
-  const observations=samples.map(f=>({kind:'segments',at:f.observedAt,userId:f.id,state:{...f,isFriend:f.id===accountId||f.isFriend===true}}));
+  const observations=samples.map(f=>({kind:'segments',at:f.observedAt,userId:f.id,...(f.id===accountId?{extensions:{'vrc.location':{source:f.extensions?.['vrc.location']?.source||'vrchat-api'}}}:{}),state:{...f,isFriend:f.id===accountId||f.isFriend===true}}));
   observations.push(...[...worlds].map(([worldId,w])=>({kind:'crowd',at:completedAt,worldId,count:w.count,instances:w.instances.size,complete})));
   observations.push({kind:'coverage',at:completedAt,outcome:complete?'complete':'partial',reason:complete?'':'online-pages',observedUsers:peers.length,rosterSize,
     online:peers.filter(f=>f.presence==='online').length,web:peers.filter(f=>f.presence==='active').length,offline:peers.filter(f=>f.presence==='offline').length,

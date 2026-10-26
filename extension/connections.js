@@ -15,7 +15,8 @@ export function reconcileConnections(previousVisits, previousEncounters, samples
       visits.set(visit.startedAt,{...visit,endedAt:at,observedAt:at});visit=null;
     }
     visit={accountId,startedAt:visit?.startedAt || at,lastSeenAt:at,observedAt:at,endedAt:null,
-      displayName:sample.displayName,presence:sample.presence,location:{...sample.location}};
+      displayName:sample.displayName,presence:sample.presence,location:{...sample.location},
+      extensions:{'vrc.location':{source:sample.extensions?.['vrc.location']?.source||'vrchat-api'}}};
     visits.set(visit.startedAt,visit);visitIds.push(visit.startedAt);
   }
   const active=new Map();

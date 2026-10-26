@@ -9,7 +9,7 @@ const uid='usr_01234567-1111-2222-3333-012345678901',fid='usr_11111111-1111-2222
 const owner={id:uid,displayName:'テスト本人',friends:[fid],onlineFriends:[fid],offlineFriends:[],activeFriends:[],authToken:'SECRET_AUTH',email:'SECRET_MAIL'};
 const online={id:fid,displayName:'架空フレンド',status:'active',location:wid+':123~region(jp)',authToken:'SECRET_AUTH',friendKey:'SECRET_KEY'};
 
-async function harness(handler, allowCloud = true){
+async function harness(handler, allowCloud = true, executeScript = async()=>[]){
   let now=Date.UTC(2026,9,24),closed=false;
   const events={},store={},alarms=new Map(),saved={friends:[],events:[],worlds:[],runs:[],images:[],visits:[],encounters:[],research:[]},calls=[];
   const hook=name=>({addListener:fn=>{events[name]=fn;}});
@@ -19,7 +19,7 @@ async function harness(handler, allowCloud = true){
   };
   const scripts=new Map(),tabRows=new Map();let nextTabId=100;
   const tabs={create:async opts=>{const tab={id:++nextTabId,status:'loading',...opts};tabRows.set(tab.id,tab);return tab;},get:async id=>{if(!tabRows.has(id))throw Error('closed');return {...tabRows.get(id)};},query:async()=>[...tabRows.values()],remove:async id=>{tabRows.delete(id);},sendMessage:async()=>({ok:true}),onUpdated:hook('tabUpdated'),onRemoved:hook('tabRemoved')};
-  const chrome={scripting:{getRegisteredContentScripts:async()=>[...scripts.values()],registerContentScripts:async rows=>rows.forEach(r=>scripts.set(r.id,r)),updateContentScripts:async rows=>rows.forEach(r=>scripts.set(r.id,r)),unregisterContentScripts:async({ids})=>ids.forEach(id=>scripts.delete(id))},permissions:{contains:async()=>allowCloud},storage:{local:storage},alarms:{create:async(n,v)=>alarms.set(n,v),get:async n=>alarms.get(n),clear:async n=>alarms.delete(n),onAlarm:hook('alarm')},
+  const chrome={scripting:{executeScript,getRegisteredContentScripts:async()=>[...scripts.values()],registerContentScripts:async rows=>rows.forEach(r=>scripts.set(r.id,r)),updateContentScripts:async rows=>rows.forEach(r=>scripts.set(r.id,r)),unregisterContentScripts:async({ids})=>ids.forEach(id=>scripts.delete(id))},permissions:{contains:async()=>allowCloud},storage:{local:storage},alarms:{create:async(n,v)=>alarms.set(n,v),get:async n=>alarms.get(n),clear:async n=>alarms.delete(n),onAlarm:hook('alarm')},
     action:{setBadgeText:async()=>{},setBadgeBackgroundColor:async()=>{},onClicked:hook('click')},
     runtime:{id:'testextension',getURL:p=>'chrome-extension://testextension/'+p,onMessage:hook('message'),onInstalled:hook('installed'),onStartup:hook('startup')},
     declarativeNetRequest:{updateDynamicRules:async v=>{saved.rules=v;}},tabs};
@@ -47,9 +47,10 @@ async function harness(handler, allowCloud = true){
   const series=new vm.SourceTextModule(await fs.readFile(new URL('observation-series.js',root),'utf8'),{context});await series.link(()=>format);
   const research=new vm.SourceTextModule(await fs.readFile(new URL('research-model.js',root),'utf8'),{context});await research.link(spec=>spec==='./sync-format.js'?format:series);
   const instancePresence=new vm.SourceTextModule(await fs.readFile(new URL('instance-presence.js',root),'utf8'),{context});await instancePresence.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:series);
+  const ownWeb=new vm.SourceTextModule(await fs.readFile(new URL('own-location-web.js',root),'utf8'),{context});await ownWeb.link(spec=>spec==='./core.js'?core:format);
   const notes=new vm.SourceTextModule(await fs.readFile(new URL('user-notes.js',root),'utf8'),{context});await notes.link(()=>format);
   const bg=new vm.SourceTextModule(await fs.readFile(new URL('background.js',root),'utf8'),{context});
-  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:spec==='./x-followers.js'?followers:spec==='./x-follower-collector.js'?followerQueue:spec==='./x-friend-discovery.js'?discovery:spec==='./observation-series.js'?series:spec==='./research-model.js'?research:spec==='./user-notes.js'?notes:spec==='./instance-presence.js'?instancePresence:spec==='./x-follower-settings.js'?followerSettings:db);await bg.evaluate();
+  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:spec==='./x-followers.js'?followers:spec==='./x-follower-collector.js'?followerQueue:spec==='./x-friend-discovery.js'?discovery:spec==='./observation-series.js'?series:spec==='./research-model.js'?research:spec==='./user-notes.js'?notes:spec==='./instance-presence.js'?instancePresence:spec==='./own-location-web.js'?ownWeb:spec==='./x-follower-settings.js'?followerSettings:db);await bg.evaluate();
   async function flush(){for(let i=0;i<15;i++)await new Promise(setImmediate);}
   await flush();
   const command=message=>new Promise(resolve=>events.message(message,{id:'testextension',url:'chrome-extension://testextension/dashboard.html'},resolve));
@@ -137,6 +138,50 @@ test('manual own collection is serialized with polling and discards an aborted r
 test('ordinary collection discovers an own location that becomes available after the first identity check',async()=>{
   let identities=0;const place=wid+':123',h=await harness(url=>url.pathname.endsWith('/auth/user')?{body:{...owner,...(++identities>1?{location:place}:{})}}:url.pathname.includes('/instances/')?{body:{location:place,userCount:2,users:[{id:uid,displayName:'Self'},{id:fid,displayName:'Friend'}]}}:good(url));
   try{await h.start();assert.equal(h.store.instanceCollectionState.available,true);assert.equal(h.store.instanceCollectionState.self.location.instanceId,'123');assert.equal(h.saved.research.filter(r=>r.kind==='instanceEncounters').length,1);assert.equal(h.saved.visits.at(-1).location.instanceId,'123');}finally{h.stop();}
+});
+
+test('own website card supplies missing location without treating its friend badge as the roster',async()=>{
+  for(const available of [true,false]){
+    const scriptCalls=[],place=wid+':123~region(jp)';
+    const h=await harness(url=>url.pathname.includes('/instances/')?{body:{location:place,...(available?{userCount:2,users:[{id:uid,displayName:'Self'},{id:fid,displayName:'Peer'}]}:{})}}:good(url),true,async req=>{scriptCalls.push(req);return [{frameId:0,result:{accountId:uid,worldId:wid,instanceId:'123~region(jp)~nonce(SECRET)',worldName:'Sidebar world',friendCount:99}}];});
+    try{
+      h.tabRows.set(5,{id:5,url:'https://vrchat.com/home'});
+      await h.command({type:'SAVE',settings:{contact:'https://github.com/example'}});
+      const result=await h.command({type:'COLLECT_OWN_INSTANCE',accountId:uid});
+      assert.equal(result.ok,true);assert.equal(result.instance.worldName,'Sidebar world');assert.equal(result.instance.self.location.instanceId,'123~region(jp)');assert.equal(result.instance.count,available?1:null);
+      assert.match(result.instance.message,/公式Web/);assert.equal(scriptCalls.length,2);assert.ok(scriptCalls.every(c=>c.target.tabId===5 && c.args[0]===uid));
+      assert.equal(h.saved.visits.length,1);assert.equal(h.saved.visits[0].extensions['vrc.location'].source,'vrchat-website');
+      assert.ok(h.saved.research.filter(r=>r.kind==='segments').every(r=>r.value.extensions['vrc.location'].source==='vrchat-website'));
+      assert.equal(h.saved.research.filter(r=>r.kind==='instanceEncounters').length,available?1:0);assert.ok(!JSON.stringify(h.saved).includes('SECRET'));
+      assert.ok(h.calls.some(c=>decodeURIComponent(c.url).endsWith('/instances/'+place)));assert.equal(h.calls.length,3);
+    }finally{h.stop();}
+  }
+});
+test('repeated polling with website fallback extends visits and segments without synthetic unknown transitions',async()=>{
+  const place=wid+':123~region(jp)',h=await harness(url=>url.pathname.includes('/instances/')?{body:{location:place,users:[],userCount:0}}:good(url),true,async()=>[{frameId:0,result:{accountId:uid,worldId:wid,instanceId:'123~region(jp)',worldName:'Sidebar world'}}]);
+  try{
+    h.tabRows.set(5,{id:5,url:'https://vrchat.com/home'});await h.start();h.advance(180000);await h.command({type:'POLL'});await h.flush();
+    assert.equal(h.saved.visits.length,1);assert.equal(h.saved.visits[0].location.worldId,wid);
+    const segments=h.saved.research.filter(r=>r.kind==='segments'&&r.value.userId===uid);assert.equal(segments.length,1);assert.equal(segments[0].value.sampleCount,4);
+  }finally{h.stop();}
+});
+test('website roster is discarded after a location/account change or disappearing card and is never queried for another owner',async()=>{
+  for(const mode of ['account','location','gone','wrong-owner']){
+    let fetched=false,identities=0;const place=wid+':123',h=await harness(url=>{
+      if(url.pathname.endsWith('/auth/user'))return {body:{...owner,id:mode==='account'&&++identities>1?'usr_otherowner001':uid}};
+      if(url.pathname.includes('/instances/')){fetched=true;return {body:{location:place,userCount:2,users:[{id:uid,displayName:'Self'},{id:fid,displayName:'Peer'}]}};}
+      return good(url);
+    },true,async()=>[{frameId:0,result:mode==='gone'&&fetched?null:{accountId:mode==='wrong-owner'?fid:uid,worldId:wid,instanceId:mode==='location'&&fetched?'456':'123',worldName:'Sidebar world'}}]);
+    try{
+      h.tabRows.set(5,{id:5,url:'https://vrchat.com/home'});await h.command({type:'SAVE',settings:{contact:'https://github.com/example'}});
+      const r=await h.command({type:'COLLECT_OWN_INSTANCE',accountId:uid});assert.equal(r.ok,mode!=='account');
+      assert.equal(h.saved.research.filter(r=>r.kind==='instanceEncounters').length,0);
+      if(mode==='account')assert.equal(h.saved.visits.length,0);
+      if(mode==='wrong-owner')assert.equal(h.calls.filter(c=>c.url.includes('/instances/')).length,0);
+      if(mode==='location')assert.equal(r.instance.self.location.instanceId,'456');
+      if(mode==='gone')assert.equal(r.instance.self.location.kind,'unknown');
+    }finally{h.stop();}
+  }
 });
 
 test('full cycle stores normalized observations, GET-only, credentials handled by browser',async()=>{

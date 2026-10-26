@@ -8,7 +8,7 @@ export function instanceViewState(me,snapshot,worldName=''){
   const friends=me.friends?new Set(me.friends):null;
   return {accountId:me.id,at:snapshot.at,self,worldName:snapshot.worldName||worldName,available:snapshot.available,complete:snapshot.complete===true,
     count:snapshot.available?snapshot.users.length:null,users:snapshot.available?snapshot.users.map(u=>({...u,isFriend:friends?friends.has(u.id):null})):[],
-    message:snapshot.available?'参加者 '+snapshot.users.length+'人を観測しました（自分を除く）。'+(snapshot.complete?'':'一覧の全件性は未確認です。'):snapshot.reason};
+    message:(self.extensions?.['vrc.location']?.source==='vrchat-website'?'現在地：公式Webの表示から取得。表示が古い場合は公式Webを再読み込みしてください。 ':'')+(snapshot.available?'参加者 '+snapshot.users.length+'人を観測しました（自分を除く）。'+(snapshot.complete?'':'一覧の全件性は未確認です。'):snapshot.reason)};
 }
 export function instanceRoster(raw,own,at){
   const expected=own.location;
@@ -36,7 +36,7 @@ export function reconcileInstancePresence(previous,snapshot,{accountId,collector
     const continues=old&&same&&!gap&&!boundary&&old.pollSeconds===pollSeconds;
     if(old&&!continues)close(old,!same?'world-change':gap?'gap':'continued');
     const startedAt=continues?old.startedAt:at;
-    writes.push(normalizeRecord('instanceEncounters',{accountId,id:continues?old.id:collectorId+'_'+startedAt+'_'+user.id,collectorId,sourceId:'',source:'vrchat-instance-api',device:'api',userId:user.id,displayName:user.displayName,location:snapshot.location,worldName:snapshot.worldName,startedAt,lastSeenAt:at,endedAt:null,observedAt:at,endReason:'',accountBinding:'api',pollSeconds,checks:continues?encodeChecks([...times,at]):''}));
+    writes.push(normalizeRecord('instanceEncounters',{accountId,id:continues?old.id:collectorId+'_'+startedAt+'_'+user.id,collectorId,sourceId:'',source:'vrchat-instance-api',device:'api',userId:user.id,displayName:user.displayName,location:snapshot.location,worldName:snapshot.worldName,startedAt,lastSeenAt:at,endedAt:null,observedAt:at,endReason:'',accountBinding:'api',pollSeconds,checks:continues?encodeChecks([...times,at]):'',...(snapshot.locationSource?{extensions:{'vrc.location':{source:snapshot.locationSource}}}:{})}));
   }
   for(const [id,old] of active)if(!seen.has(id))close(old,!snapshot.available?(snapshot.reason==='stopped'?'stopped':'unavailable'):!sameInstance(old.location,snapshot.location)?'world-change':snapshot.complete?'absent':'unavailable');
   return writes;

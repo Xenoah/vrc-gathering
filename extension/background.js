@@ -14,6 +14,7 @@ import { reportSummary, scheduledBoundary, DAY } from './research-model.js';
 import {instanceRoster,reconcileInstancePresence,sameInstance,instanceViewState} from './instance-presence.js';
 import {xConcurrency,validateXConcurrency,xScope,xAccountId,validateXScope,xBulkScope,validateXBulkScope} from './x-follower-settings.js';
 import {createFriendDiscovery,X_DISCOVERY_ALARM} from './x-friend-discovery.js';
+import {websiteOwnLocation} from './own-location-web.js';
 
 const updateAccounts = createAccountUpdater(chrome.storage.local);
 let collectorPromise,activeReports,noteGeneration=0;
@@ -192,10 +193,12 @@ async function identity(signal, label, options) {
 async function readOwnInstance(signal,accountId,{quiet=false}={}){
   const before=await identity(signal,'自分の現在地を確認中',{quiet});
   if(accountId&&before.id!==accountId)throw new ApiError(quiet?'表示アカウントとVRChatのログインアカウントが異なります。':'取得中にアカウントが切り替わりました。この巡回は保存せず、停止します。',403);
-  const own=before.self,reason={offline:'現実世界（ゲーム未接続）です。',web:'Web／アプリに接続中です。',traveling:'移動中です。次回の取得で確認します。',private:'現在地はプライベートのため、インスタンスを特定できません。'}[own.location.kind]||'現在のインスタンスを確認できません。';
+  const webBefore=await websiteOwnLocation(chrome,before,signal);
+  if(webBefore)before.self=webBefore.self;
+  const own=before.self,reason={offline:'現実世界（ゲーム未接続）です。',web:'APIで現在地を確認できません。公式Webの自分の現在地カードを表示して、再取得してください。',traveling:'移動中です。次回の取得で確認します。',private:'現在地はプライベートのため、インスタンスを特定できません。'}[own.location.kind]||'現在のインスタンスを確認できません。公式Webの自分の現在地カードを表示して、再取得してください。';
   let snapshot={at:Date.now(),available:false,reason},worlds=[];
   if(own.presence==='online'&&own.location.kind==='world'&&own.location.instanceId){
-    // The path is derived exclusively from this fresh authenticated identity.
+    // Bound to the fresh authenticated identity (API or its own sidebar card).
     const path='/instances/'+own.location.worldId+':'+encodeURIComponent(own.location.instanceId);
     try{
       const raw=await request(path,signal,'In Instanceの参加者一覧を取得中',{quiet,instancePath:path});snapshot=instanceRoster(raw,own,Date.now());
@@ -207,7 +210,11 @@ async function readOwnInstance(signal,accountId,{quiet=false}={}){
   }
   const after=await identity(signal,'自分の現在地とアカウントを再確認中',{quiet});
   if(after.id!==before.id)throw new ApiError('取得中にアカウントが切り替わりました。この取得は保存しません。',403);
+  const webAfter=webBefore?await websiteOwnLocation(chrome,after,signal,webBefore.tabId):null;
+  if(webAfter)after.self=webAfter.self;
   if(snapshot.available&&(!sameInstance(own.location,after.self.location)||after.self.presence!=='online'||after.self.observedAt-own.observedAt>120000))snapshot={at:Date.now(),available:false,reason:'一覧取得中に現在地が変わったか、確認間隔が空きました。'};
+  if(webAfter)snapshot.worldName=webAfter.worldName;
+  snapshot.locationSource=webBefore?'vrchat-website':'vrchat-api';
   signal.throwIfAborted();return {before,after,snapshot,worlds};
 }
 async function pages(offline, offset, maximum, signal, me) {
@@ -304,8 +311,10 @@ async function collect(signal) {
       onlineOffset: nextMeta.onlineOffset, offlineOffset: nextMeta.offlineOffset || 0, observedCount: changes.records.length,
       changedCount: changes.events.length, worldNamesPending: Math.max(0, pendingWorlds.length - 5) };
     const [previousVisits,previousEncounters]=await Promise.all([list('visits',accountId),list('encounters',accountId)]);
-    const connections=reconcileConnections(previousVisits,previousEncounters,[me.self,own.before.self,finalMe.self],allowed,accountId,{pollSeconds:config.pollSeconds,completedAt,roster});
-    const collectorId=await collector(),research=collectionSeries(await activeSeries(accountId),{accountId,collectorId,pollSeconds:config.pollSeconds,samples:[...changes.records,me.self,own.before.self,finalMe.self],completedAt,rosterSize:roster?.size||0,complete:onlinePage.complete&&!(meta.onlineOffset||0)});
+    const initialUnknown=['unknown','web'].includes(me.self.location.kind)||me.self.location.kind==='world'&&!me.self.location.instanceId;
+    const selfSamples=[...(initialUnknown&&own.before.self.extensions?.['vrc.location']?[]:[me.self]),own.before.self,finalMe.self];
+    const connections=reconcileConnections(previousVisits,previousEncounters,selfSamples,allowed,accountId,{pollSeconds:config.pollSeconds,completedAt,roster});
+    const collectorId=await collector(),research=collectionSeries(await activeSeries(accountId),{accountId,collectorId,pollSeconds:config.pollSeconds,samples:[...changes.records,...selfSamples],completedAt,rosterSize:roster?.size||0,complete:onlinePage.complete&&!(meta.onlineOffset||0)});
     const compactRun=compressRun(await list('runs',accountId),run,collectorId,config.pollSeconds);
     const instanceRecords=reconcileInstancePresence(await activeSeries(accountId),instanceSnapshot,{accountId,collectorId,pollSeconds:config.pollSeconds});
     await commit(changes.records, changes.events, worlds, compactRun, connections,[...research,...noteChanges(await researchKind('userNotes',accountId),notes.samples),...instanceRecords]);
@@ -376,7 +385,7 @@ async function collectOwnInstance({accountId=''}) {
     const own=await readOwnInstance(abort.signal,accountId,{quiet:true}),id=own.after.id,collectorId=await collector(),completedAt=Date.now();
     const previous=await activeSeries(id),visits=await list('visits',id),samples=[own.before.self,own.after.self];
     const connections=reconcileConnections(visits,[],samples,[],id,{pollSeconds:config.pollSeconds,completedAt});
-    const research=[...updateSeries(previous,samples.map(f=>({kind:'segments',at:f.observedAt,userId:id,state:{...f,isFriend:true}})),{accountId:id,collectorId,pollSeconds:config.pollSeconds}),
+    const research=[...updateSeries(previous,samples.map(f=>({kind:'segments',at:f.observedAt,userId:id,extensions:{'vrc.location':{source:f.extensions?.['vrc.location']?.source||'vrchat-api'}},state:{...f,isFriend:true}})),{accountId:id,collectorId,pollSeconds:config.pollSeconds}),
       ...reconcileInstancePresence(previous,own.snapshot,{accountId:id,collectorId,pollSeconds:config.pollSeconds})];
     abort.signal.throwIfAborted();
     await commit([],[],own.worlds,null,connections,research);
