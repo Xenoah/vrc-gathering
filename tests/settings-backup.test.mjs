@@ -13,6 +13,12 @@ test('X concurrency is exported/restored, defaults to three for old files, and r
   for(const value of [0,11,1.5,'5',null,true]){backup.settings.xFollowers.concurrency=value;assert.throws(()=>validate(backup));}
   function validate(b){return parseSettingsBackup(JSON.stringify(b));}
 });
+test('all-profile mode and its destination round-trip, while old backups remain linked-only',()=>{
+  const accountId='usr_scopefixture01',backup=createSettingsBackup({xFollowerSettings:{enabled:true,scope:'all',accountId,concurrency:5}});
+  assert.deepEqual(resolveSettingsBackup(backup).xFollowerSettings,{enabled:true,scope:'all',accountId,concurrency:5});
+  for(const change of [{scope:'invalid'},{accountId:''},{accountId:null},{accountId:'https://x.com/person'}])assert.throws(()=>parseSettingsBackup(JSON.stringify({...backup,settings:{...backup.settings,xFollowers:{...backup.settings.xFollowers,...change}}})));
+  delete backup.settings.xFollowers.scope;delete backup.settings.xFollowers.accountId;assert.equal(resolveSettingsBackup(backup).xFollowerSettings.scope,'linked');assert.equal(resolveSettingsBackup(backup).xFollowerSettings.accountId,'');
+});
 
 test('settings exports round-trip preferences and exclude runtime state and secrets by default',()=>{
   const exported=createSettingsBackup(saved,false,0), text=JSON.stringify(exported);

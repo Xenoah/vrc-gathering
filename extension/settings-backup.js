@@ -1,6 +1,6 @@
 import { DEFAULTS, VERSION, settings, validContact } from './core.js';
 import { syncSettings } from './sync.js';
-import {xConcurrency,validateXConcurrency} from './x-follower-settings.js';
+import {xConcurrency,validateXConcurrency,xScope,xAccountId,validateXScope} from './x-follower-settings.js';
 
 export const BACKUP_LIMIT = 64 * 1024;
 const FORMAT = 'vrc-gathering-settings';
@@ -14,7 +14,7 @@ export function createSettingsBackup(saved, includeToken = false, now = Date.now
   const cloud = saved.cloudSync || {};
   return validateSettingsBackup({ format:FORMAT, schema:1, appVersion:VERSION, exportedAt:new Date(now).toISOString(),
     settings:{ collection, sync:{enabled:cloud.enabled === true, endpoint:cloud.endpoint || '',
-      ...(includeToken ? {token:cloud.token || ''} : {})}, images:{enabled:saved.imageCacheSettings?.enabled === true},xFollowers:{enabled:saved.xFollowerSettings?.enabled===true,concurrency:xConcurrency(saved.xFollowerSettings?.concurrency)} } });
+      ...(includeToken ? {token:cloud.token || ''} : {})}, images:{enabled:saved.imageCacheSettings?.enabled === true},xFollowers:{enabled:saved.xFollowerSettings?.enabled===true,concurrency:xConcurrency(saved.xFollowerSettings?.concurrency),scope:xScope(saved.xFollowerSettings?.scope),accountId:xAccountId(saved.xFollowerSettings?.accountId)} } });
 }
 
 export function validateSettingsBackup(input) {
@@ -34,12 +34,15 @@ export function validateSettingsBackup(input) {
   const hasFollowers=Object.hasOwn(group,'xFollowers');
   if(hasFollowers&&(!object(group.xFollowers)||typeof group.xFollowers.enabled!=='boolean'))fail('Xフォロワー数');
   if(hasFollowers&&Object.hasOwn(group.xFollowers,'concurrency'))validateXConcurrency(group.xFollowers.concurrency);
+  if(hasFollowers&&Object.hasOwn(group.xFollowers,'scope'))validateXScope(group.xFollowers.scope);
+  if(hasFollowers&&Object.hasOwn(group.xFollowers,'accountId')&&group.xFollowers.accountId!==''&&!xAccountId(group.xFollowers.accountId))fail('Xの保存先アカウント');
+  if(hasFollowers&&xScope(group.xFollowers.scope)==='all'&&!xAccountId(group.xFollowers.accountId))fail('Xの保存先アカウント');
   const hasToken = Object.hasOwn(s, 'token');
   if (hasToken && s.token !== '' && !validToken(s.token)) fail('同期キー（32〜256文字の英数字・ハイフン・アンダースコア）');
   return { format:FORMAT, schema:1, appVersion:typeof input.appVersion === 'string' ? input.appVersion.slice(0,40) : '',
     exportedAt:typeof input.exportedAt === 'string' ? input.exportedAt.slice(0,40) : '',
     settings:{collection:{contact:c.contact,pollSeconds:c.pollSeconds,retentionDays:c.retentionDays,offlineRefreshMinutes:c.offlineRefreshMinutes},
-      sync:{enabled:s.enabled,endpoint,...(hasToken ? {token:s.token} : {})},images:{enabled:group.images.enabled},...(hasFollowers?{xFollowers:{enabled:group.xFollowers.enabled,concurrency:xConcurrency(group.xFollowers.concurrency)}}:{})} };
+      sync:{enabled:s.enabled,endpoint,...(hasToken ? {token:s.token} : {})},images:{enabled:group.images.enabled},...(hasFollowers?{xFollowers:{enabled:group.xFollowers.enabled,concurrency:xConcurrency(group.xFollowers.concurrency),scope:xScope(group.xFollowers.scope),accountId:xAccountId(group.xFollowers.accountId)}}:{})} };
 }
 
 export function parseSettingsBackup(content) {

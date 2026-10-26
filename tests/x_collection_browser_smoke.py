@@ -100,6 +100,29 @@ async def main():
     # A separately opened profile is collected but never closed by the queue.
     counts['missing']=999;manual=await context.new_page();await manual.goto('https://x.com/missing')
     await worker.wait_for_function("fixture.values.xFollowerCache['xFollowers:usr_demoaccount0001:missing'].followers===999");assert not manual.is_closed();await manual.close()
+    # Unlinked profiles require the explicit all-profile mode and a chosen dataset.
+    counts['unlinked']=4321;manual=await context.new_page();await manual.goto('https://x.com/unlinked');await manual.wait_for_timeout(1200)
+    assert not await worker.evaluate("fixture.values.xFollowerCache['xFollowers:usr_demoaccount0001:unlinked']")
+    await manual.close();await worker.locator('[data-tab=settings]').click()
+    await expect(worker.locator('#xFollowerScope')).to_have_value('linked');await worker.locator('#xFollowerScope').select_option('all')
+    await expect(worker.locator('#xFollowerAccountField')).to_be_visible();await worker.locator('#xFollowerAccount').select_option('usr_demoaccount0001')
+    await worker.get_by_role('button',name='Xの設定を保存',exact=True).click();await worker.wait_for_function("fixture.values.xFollowerSettings.scope==='all'")
+    manual=await context.new_page();await manual.goto('https://x.com/unlinked')
+    await worker.wait_for_function("fixture.values.xFollowerCache['xFollowers:usr_demoaccount0001:unlinked']?.followers===4321")
+    assert not manual.is_closed();await manual.close()
+    assert not await worker.evaluate("Object.values(fixture.values.xProfileCache).some(p=>p.urls.includes('https://x.com/unlinked'))")
+    await worker.locator('#xSavedProfiles summary').click();await expect(worker.locator('#xSavedBody')).to_contain_text('@unlinked')
+    await worker.locator('#xSavedSort').select_option('followers-desc');await expect(worker.locator('#xSavedBody tr').first).to_contain_text('@unlinked')
+    await worker.locator('#xSavedSearch').fill('@unlinked');await expect(worker.locator('#xSavedCount')).to_have_text('1件');await expect(worker.locator('#xSavedBody')).to_contain_text('4,321')
+    async with worker.expect_download() as exported:await worker.locator('#exportSettings').click()
+    backup=json.loads(Path(await (await exported.value).path()).read_text());assert backup['settings']['xFollowers']['scope']=='all';assert backup['settings']['xFollowers']['accountId']=='usr_demoaccount0001'
+    await worker.locator('#xFollowerScope').select_option('linked');await worker.get_by_role('button',name='Xの設定を保存',exact=True).click();await worker.wait_for_function("fixture.values.xFollowerSettings.scope==='linked'")
+    counts['unlinked']=9999;manual=await context.new_page();await manual.goto('https://x.com/unlinked');await manual.wait_for_timeout(1200)
+    assert await worker.evaluate("fixture.values.xFollowerCache['xFollowers:usr_demoaccount0001:unlinked'].followers")==4321;await manual.close()
+    await worker.locator('#settingsFile').set_input_files({'name':'settings.json','mimeType':'application/json','buffer':json.dumps(backup).encode()})
+    await expect(worker.locator('#settingsImportFields')).to_contain_text('開いたXプロフィール全員');await worker.locator('#confirmSettingsImport').click()
+    await expect(worker.locator('#settingsImportDialog')).not_to_be_visible();await expect(worker.locator('#xFollowerScope')).to_have_value('all')
+    await worker.locator('#xSavedSearch').fill('');await worker.locator('.image-settings').filter(has=worker.locator('#xFollowerHeading')).screenshot(path='/tmp/vrc-x-all-desktop.png')
     # Saved concurrency applies to bulk auto-enable, survives reload, and offers every value 1..10.
     await worker.locator('[data-tab=settings]').click()
     assert await worker.locator('#xFollowerConcurrency option').all_text_contents()==[str(i)+'件' for i in range(1,11)]
@@ -111,6 +134,7 @@ async def main():
     await worker.screenshot(path='/tmp/vrc-x-settings-desktop.png',full_page=True)
     await worker.set_viewport_size({'width':390,'height':844});assert await worker.evaluate('document.documentElement.scrollWidth<=innerWidth')
     await worker.screenshot(path='/tmp/vrc-x-settings-mobile.png',full_page=True)
+    await worker.locator('.image-settings').filter(has=worker.locator('#xFollowerHeading')).screenshot(path='/tmp/vrc-x-all-mobile.png')
     await worker.set_viewport_size({'width':1450,'height':1050})
     # Thirty targets with three unreadable profiles must all be processed without a global pause.
     original_profiles=await worker.evaluate('fixture.values.xProfileCache')
@@ -152,6 +176,6 @@ async def main():
     await worker.set_viewport_size({'width':390,'height':844});assert await worker.evaluate('document.documentElement.scrollWidth<=innerWidth')
     await worker.screenshot(path='/tmp/vrc-x-collection-mobile.png',full_page=True)
     assert not errors,errors
-    await browser.close();print('PASS: three and ten concurrent real tabs, 30 targets completed despite three failures, bounded retries, missing-first refill, saved concurrency/reload/mobile, no repeated bulk jobs, detail refresh, preserved manual tab, rate-limit pause, no APIs during bulk X collection')
+    await browser.close();print('PASS: opt-in all-profile collection, unlinked rows/search/sort, scope switching and backup/restore, three/ten concurrent tabs, 30-target completion, bounded retries, missing-first, reload/mobile, detail refresh, preserved manual tabs, rate-limit pause, no X API')
 try:asyncio.run(main())
 finally:server.shutdown()

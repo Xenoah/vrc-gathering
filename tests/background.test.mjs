@@ -358,6 +358,35 @@ test('X header counts require opt-in, a top-level X sender and an already linked
   await h.command({type:'CLEAR'});assert.deepEqual(h.store.xFollowerCache,{});h.stop();
 });
 
+test('all-profile mode stores unlinked header counts in the chosen account without inventing VRChat links',async()=>{
+  const h=await harness(good),other='usr_secondscope001';h.store.accountMeta={[uid]:{displayName:'Owner'},[other]:{displayName:'Other'}};
+  const message={type:'X_FOLLOWERS_OBSERVED',url:'https://x.com/unlinked',followers:42,approximate:false},sender={id:'testextension',url:message.url,frameId:0,tab:{id:10}},observe=(changes={},origin=sender)=>new Promise(resolve=>h.events.message({...message,...changes},origin,resolve));
+  try{
+    await h.command({type:'SAVE_X_FOLLOWERS',enabled:true});assert.equal((await observe()).ok,false);
+    for(const changes of [{scope:'bad',accountId:uid},{scope:'all',accountId:''},{scope:'all',accountId:'usr_unregistered01'}])assert.equal((await h.command({type:'SAVE_X_FOLLOWERS',enabled:true,...changes})).ok,false);
+    assert.equal((await h.command({type:'SAVE_X_FOLLOWERS',enabled:true,scope:'all',accountId:uid})).ok,true);
+    assert.equal((await observe()).ok,true);assert.equal(h.store.xFollowerCache['xFollowers:'+uid+':unlinked'].followers,42);assert.equal(h.store.xFollowerCache['xFollowers:'+other+':unlinked'],undefined);assert.equal(h.store.xProfileCache,undefined);assert.equal(h.saved.friends.length,0);assert.equal(h.tabRows.size,0);assert.equal(h.calls.length,0);
+    h.advance(61000);await observe();assert.equal(h.saved.research.filter(r=>r.kind==='followerHistory').length,1);assert.equal(h.saved.research[0].value.sampleCount,2);
+    for(const invalid of [{...sender,frameId:1},{...sender,url:'https://example.com/unlinked'},{...sender,url:'https://x.com/unlinked/status/1'}])assert.equal((await observe({},invalid)).ok,false);
+    assert.equal((await observe({url:'https://x.com/home'},{...sender,url:'https://x.com/home'})).ok,false);assert.equal((await observe({followers:-1})).ok,false);
+    await h.command({type:'SAVE_X_FOLLOWERS',enabled:true,accountId:other});await h.command({type:'SAVE_X_FOLLOWERS',enabled:true});assert.equal(h.store.xFollowerSettings.scope,'all');assert.equal(h.store.xFollowerSettings.accountId,other);h.advance(61000);await observe({followers:99});assert.equal(h.store.xFollowerCache['xFollowers:'+other+':unlinked'].followers,99);assert.equal(h.store.xFollowerCache['xFollowers:'+uid+':unlinked'].followers,42);
+    await h.command({type:'SAVE_X_FOLLOWERS',enabled:true,scope:'linked'});assert.equal((await observe({followers:100})).ok,false);assert.equal(h.store.xFollowerCache['xFollowers:'+other+':unlinked'].followers,99);
+    h.store.xProfileCache={[uid+'/'+fid]:{accountId:uid,userId:fid,checkedAt:h.saved.research.at(-1).value.observedAt,urls:[message.url]}};h.advance(61000);await observe({followers:101});assert.equal(h.store.xFollowerCache['xFollowers:'+uid+':unlinked'].followers,101);assert.equal(h.store.xFollowerCache['xFollowers:'+other+':unlinked'].followers,99);
+    await h.command({type:'SAVE_X_FOLLOWERS',enabled:false,scope:'all'});assert.equal((await observe()).ok,false);
+  }finally{h.stop();}
+});
+
+test('unlinked X counts synchronize through the existing GAS table without user-profile associations',async()=>{
+  const gas=gasHarness(),h=await harness((url,n,options)=>url.hostname==='script.google.com'?{body:gas.request(JSON.parse(options.body))}:good(url));
+  try{
+    h.store.accountMeta={[uid]:{displayName:'Owner'}};await h.command({type:'SAVE_X_FOLLOWERS',enabled:true,scope:'all',accountId:uid});
+    const message={type:'X_FOLLOWERS_OBSERVED',url:'https://x.com/unlinked',followers:123,approximate:true};
+    const result=await new Promise(resolve=>h.events.message(message,{id:'testextension',url:message.url,frameId:0,tab:{id:10}},resolve));assert.equal(result.ok,true);await h.flush();
+    h.store.cloudSync={enabled:true,endpoint:'https://script.google.com/macros/s/test_deployment/exec',token:TOKEN};assert.equal((await h.command({type:'SYNC',force:true})).ok,true);assert.equal(gas.table('VRCXFollowers').length,2);assert.ok(!gas.table('VRCProfiles')?.slice(1).length);
+    h.store.xFollowerCache={};h.store.cloudCheckpoint={cursor:0,receipts:{}};h.advance(61000);assert.equal((await h.command({type:'SYNC',force:true})).ok,true);assert.equal(h.store.xFollowerCache['xFollowers:'+uid+':unlinked'].followers,123);assert.equal(h.store.xProfileCache,undefined);
+  }finally{h.stop();}
+});
+
 test('the worker sends follower metrics to GAS and restores them without collecting images',async()=>{
   const gas=gasHarness(),h=await harness((url,n,options)=>url.hostname==='script.google.com'?{body:gas.request(JSON.parse(options.body))}:good(url));
   await h.start();h.store.xFollowerCache={['xFollowers:'+uid+':example']:{accountId:uid,url:'https://x.com/example',followers:25000,approximate:true,source:'x-profile',observedAt:h.store.accountMeta[uid].lastSuccessAt}};

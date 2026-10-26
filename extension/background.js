@@ -4,7 +4,7 @@ import { createImageCollector, imageCandidate, IMAGE_ORIGINS, IMAGE_CACHE_BYTES,
 import { createSync, syncSettings, createAccountUpdater, CLOUD_ORIGINS, serverRetryDeadline } from './sync.js';
 import { resolveSettingsBackup } from './settings-backup.js';
 import { reconcileConnections } from './connections.js';
-import { extractXProfiles, readXCache, writeXCache, X_CACHE_TTL } from './x-profile.js';
+import { extractXProfiles, readXCache, writeXCache, X_CACHE_TTL, xProfileURL } from './x-profile.js';
 import { normalizeRecord, mergeRecord, logInstanceId } from './sync-format.js';
 import { createFollowerCollector, followerTargets, X_QUEUE_ALARM } from './x-follower-collector.js';
 import { X_FOLLOWER_ORIGINS, followerRecords, mergeFollowerCache } from './x-followers.js';
@@ -12,7 +12,7 @@ import { collectionSeries, stopSeries, updateSeries, compressRun } from './obser
 import { officialNote, noteChanges, noteChecks, NOTE_SCAN_INTERVAL, NOTE_CACHE_TTL } from './user-notes.js';
 import { reportSummary, scheduledBoundary, DAY } from './research-model.js';
 import {instanceRoster,reconcileInstancePresence,sameInstance,instanceViewState} from './instance-presence.js';
-import {xConcurrency,validateXConcurrency} from './x-follower-settings.js';
+import {xConcurrency,validateXConcurrency,xScope,xAccountId,validateXScope} from './x-follower-settings.js';
 
 const updateAccounts = createAccountUpdater(chrome.storage.local);
 let collectorPromise,activeReports,noteGeneration=0;
@@ -428,14 +428,18 @@ async function configureFollowerScript(enabled){
 async function acceptFollowerObservation(message,sender){
   if(sender.id!==chrome.runtime.id||sender.frameId!==0||!Number.isInteger(sender.tab?.id)||profileResetting)return {ok:false};
   let url;try{const page=new URL(sender.url);if(page.origin!=='https://x.com'||!/^\/[a-z0-9_]{1,15}\/?$/i.test(page.pathname))return {ok:false};url='https://x.com/'+page.pathname.replaceAll('/','').toLowerCase();}catch{return {ok:false};}
-  if(message.url!==url)return {ok:false};
-  const generation=followerGeneration,saved=await chrome.storage.local.get(['xFollowerSettings','xProfileCache']);
+  if(message.url!==url||!xProfileURL(url))return {ok:false};
+  const generation=followerGeneration,saved=await chrome.storage.local.get(['xFollowerSettings','xProfileCache','accountMeta']);
   if(!saved.xFollowerSettings?.enabled||!await chrome.permissions.contains({origins:X_FOLLOWER_ORIGINS}))return {ok:false};
   const cache=saved.xProfileCache||{},owners=new Set();
   for(const entry of Object.values(cache)){const profile=readXCache(cache,entry?.accountId,entry?.userId);if(profile?.urls.includes(url))owners.add(profile.accountId);}
+  // All-profile observations belong to an explicitly chosen dataset, not an inferred VRChat person.
+  const target=xAccountId(saved.xFollowerSettings.accountId);
+  if(xScope(saved.xFollowerSettings.scope)==='all'&&target&&saved.accountMeta?.[target])owners.add(target);
   if(!owners.size||profileResetting||generation!==followerGeneration)return {ok:false};
   const records=[...owners].map(accountId=>normalizeRecord('xFollowers',{accountId,url,followers:message.followers,approximate:message.approximate,source:'x-profile',observedAt:Date.now()}));
-  for(const record of records){const v=record.value;await mergeSyncRecords(updateSeries(await activeSeries(v.accountId),[{kind:'followerHistory',at:v.observedAt,url:v.url,followers:v.followers,approximate:v.approximate}],{accountId:v.accountId,collectorId:await collector(),pollSeconds:180}));}
+  for(const record of records){const v=record.value,previous=await activeSeries(v.accountId),collectorId=await collector();if(profileResetting||generation!==followerGeneration)return {ok:false};await mergeSyncRecords(updateSeries(previous,[{kind:'followerHistory',at:v.observedAt,url:v.url,followers:v.followers,approximate:v.approximate}],{accountId:v.accountId,collectorId,pollSeconds:180}));}
+  if(profileResetting||generation!==followerGeneration)return {ok:false};
   await mergeFollowers(records);await followerQueue.observed(url,sender.tab.id);void syncQuietly();return {ok:true};
 }
 async function command(message) {
@@ -469,11 +473,15 @@ async function command(message) {
   if(message.type==='SAVE_X_FOLLOWERS'){
     const enabled=message.enabled===true,previous=(await chrome.storage.local.get('xFollowerSettings')).xFollowerSettings||{};
     const concurrency=message.concurrency===undefined?xConcurrency(previous.concurrency):validateXConcurrency(message.concurrency);
+    const scope=message.scope===undefined?xScope(previous.scope):validateXScope(message.scope),accountId=message.accountId===undefined?xAccountId(previous.accountId):xAccountId(message.accountId);
+    if(message.accountId!==undefined&&message.accountId!==''&&!accountId)throw Error('Xの保存先アカウントが不正です。');
+    if(scope==='all'&&(!accountId||enabled&&!(await chrome.storage.local.get('accountMeta')).accountMeta?.[accountId]))throw Error('全員モードの保存先には、VRChatで取得済みのアカウントを選んでください。');
     if(enabled&&!await chrome.permissions.contains({origins:X_FOLLOWER_ORIGINS}))throw Error('Xへの接続を許可してください。');
-    if(enabled!==previous.enabled)followerGeneration++;
-    await chrome.storage.local.set({xFollowerSettings:{enabled,concurrency}});
+    if(enabled!==previous.enabled||scope!==xScope(previous.scope)||accountId!==xAccountId(previous.accountId))followerGeneration++;
+    const settings={enabled,concurrency,scope,accountId};
+    await chrome.storage.local.set({xFollowerSettings:settings});
     if(!enabled)await followerQueue.pause();
-    await configureFollowerScript(enabled);if(enabled)void followerQueue.tick().catch(()=>{});return {ok:true,settings:{enabled,concurrency}};
+    await configureFollowerScript(enabled);if(enabled)void followerQueue.tick().catch(()=>{});return {ok:true,settings};
   }
   if (message.type === 'IMPORT_SETTINGS') {
     const current = await chrome.storage.local.get('cloudSync');
