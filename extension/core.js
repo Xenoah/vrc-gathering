@@ -30,7 +30,7 @@ export function continuityMetadata(previous, current) {
 }
 
 
-export const VERSION = '0.14.1';
+export const VERSION = '0.15.0';
 export const DEFAULTS = Object.freeze({ enabled: false, contact: '', pollSeconds: 180, retentionDays: 30, offlineRefreshMinutes: 60 });
 export const USER_ID = /^(usr_[a-zA-Z0-9-]{8,64}|[a-zA-Z0-9]{8,32})$/;
 export const WORLD_ID = /^wrld_[a-zA-Z0-9-]{8,64}$/;
@@ -58,8 +58,8 @@ export function currentUser(raw, observedAt = Date.now()) {
   // Never retain the raw CurrentUser response: it can contain tokens, email and account details.
   // homeLocation is a preference, never evidence of the current location.
   const p=raw.presence&&(!raw.presence.id||raw.presence.id===raw.id)?raw.presence:null;
-  const presenceInstance=typeof p?.instance==='string'?p.instance.replace(/^wrld_[a-zA-Z0-9-]{8,64}:/,''):'';
-  const ownLocation = typeof raw.location === 'string' ? raw.location : WORLD_ID.test(raw.worldId) ? raw.worldId + (typeof raw.instanceId === 'string' && raw.instanceId ? ':' + raw.instanceId : '') : WORLD_ID.test(p?.world)?p.world+(presenceInstance?':'+presenceInstance:''):'';
+  const presenceInstance=typeof p?.instance==='string'&&(!p.instance.startsWith('wrld_')||p.instance.startsWith(p.world+':'))?p.instance.replace(/^wrld_[a-zA-Z0-9-]{8,64}:/,''):'';
+  const ownLocation = typeof raw.location === 'string' && raw.location ? raw.location : WORLD_ID.test(raw.worldId) ? raw.worldId + (typeof raw.instanceId === 'string' && raw.instanceId ? ':' + raw.instanceId : '') : WORLD_ID.test(p?.world)?p.world+(presenceInstance?':'+presenceInstance:''):'';
   const own = friend({...raw,location:ownLocation},observedAt,WORLD_ID.test(ownLocation.split(':')[0]) ? 'online' : 'unknown');
   return { id: raw.id, displayName: text(raw.displayName, 128), self:{id:raw.id,displayName:own.displayName,presence:own.presence,location:own.presence==='online'?own.location:location('',own.presence),observedAt}, friends: ids('friends'),
     offlineFriends: ids('offlineFriends'), onlineFriends: ids('onlineFriends'), activeFriends: ids('activeFriends') };

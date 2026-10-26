@@ -2,6 +2,7 @@ import { createLogParser, logSourceId, summarizeLogEncounters, logDuration } fro
 import { readResearch } from './db.js';
 import { csv } from './core.js';
 import { canonical, normalizeRecord, mergeRecord } from './sync-format.js';
+import { observationGap } from './connections.js';
 
 const MAX_FILE=128*1024*1024;
 const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n;};
@@ -13,7 +14,12 @@ async function sourceSetting(value){
 
 export function createGameLogView({root,request,download,isDemo=false}){
   root.innerHTML=`<div class="intelligence-heading"><div><h2>全ユーザーの同席記録</h2><p>In Instanceの参加者一覧と、自分の参加・退出ログから同席を集計します。</p></div></div>
-  <div class="log-inputs"><p><strong>In Instanceの自動収集</strong>：通常の収集と一緒に、自分の現在地についてAPIが返す参加者を記録します。非フレンドも対象です。Chromeで収集が動いている必要があります。</p><p id="instanceCollectionStatus" role="status"></p>
+  <section class="instance-current"><div class="instance-heading"><h3>自分の現在地・参加者</h3><button id="collectOwnInstance" class="primary">現在地・参加者を取得して記録</button></div>
+    <p id="instanceRequestStatus" role="status"></p><dl class="instance-location"><div><dt>自分の最終観測</dt><dd id="instanceSelfPlace">未取得</dd></div><div><dt>インスタンス</dt><dd id="instanceSelfId">—</dd></div><div><dt>確認日時（JST）</dt><dd id="instanceSelfAt">—</dd></div></dl>
+    <p id="instanceCollectionStatus" role="status"></p><div class="table-wrap"><table><thead><tr><th>参加者（自分を除く）</th><th>関係</th><th>この区間の観測開始（JST）</th></tr></thead><tbody id="instanceCurrentUsers"></tbody></table></div>
+    <p class="muted">取得時点の一覧です。非フレンドも記録し、同じ場所・同じ相手の記録は観測時刻を更新します。収集停止中もこのボタンで1回取得できます。自動記録は上部の「収集を開始」から。</p>
+  </section>
+  <div class="log-inputs"><p><strong>PCログの取り込み</strong>：参加・退出のログを使って、同席区間を記録します。</p>
     <div class="log-actions"><button id="chooseLogFolder">ログフォルダーを選択</button><button id="resumeLogWatch">監視を再開</button><button id="stopLogWatch">監視を停止</button><button id="chooseLogFiles">ログファイルを取り込む</button><input id="logFiles" type="file" accept=".txt,.log" multiple hidden></div>
     <div class="log-actions"><label>形式 <select id="logFormat"><option value="pc">PC版のログ</option><option value="logcat">Quest／Androidのlogcat（取り込みのみ・実験）</option></select></label><label>PCログの時差（UTCからの分） <input id="logOffset" type="number" min="-840" max="840" step="15" value="540"></label></div>
     <label class="check-label"><input id="logOwnerConfirmed" type="checkbox">表示中のアカウントでプレイしたログです</label><p id="logImportStatus" role="status"></p>
@@ -22,10 +28,35 @@ export function createGameLogView({root,request,download,isDemo=false}){
   <div class="log-filters"><label>期間 <select id="logRange"><option value="1">24時間</option><option value="7" selected>7日間</option><option value="30">30日間</option><option value="90">90日間</option><option value="0">保存済みすべて</option></select></label><label>対象 <select id="logRelation"><option value="all">全員</option><option value="nonfriend">現在の非フレンド</option><option value="friend">現在のフレンド</option><option value="unknown">ID未記録</option></select></label><label>記録元 <select id="logDevice"><option value="">すべて</option><option value="api">In Instance API</option><option value="pc">PCログ</option><option value="quest">Quest／Android</option></select></label><label>ワールド <select id="logWorld"><option value="">すべて</option></select></label><label>並べ替え <select id="logSort"><option value="duration">合計同席時間</option><option value="count">同席回数</option><option value="latest">最後の同席</option><option value="first">最初の同席</option><option value="name">名前</option></select></label><input id="logSearch" type="search" placeholder="ユーザー名・ID" aria-label="同席ユーザー検索"><button id="logSummaryCSV">集計CSV</button><button id="logSessionsCSV">区間CSV</button></div>
   <p id="logSummary" class="intelligence-summary" role="status"></p><div class="table-wrap"><table><thead><tr><th>ユーザー</th><th>現在の関係</th><th>同席回数</th><th>同席時間（観測・ログ）</th><th>最初の同席</th><th>最後の同席</th><th>ワールド数</th></tr></thead><tbody id="logBody"></tbody></table></div><button id="logMore" hidden>さらに100人表示</button><section id="logDetail" class="connections-detail" aria-live="polite"></section>`;
   const $=id=>root.querySelector('#'+id);
-  let accountId='',friends=[],epoch=0,records=[],rows=[],selected='',limit=100,generation=0,loading=0,watch=null,watchTimer,busy=false,lastFiles=new Map();
+  let accountId='',friends=[],epoch=0,records=[],rows=[],selected='',limit=100,generation=0,loading=0,watch=null,watchTimer,busy=false,lastFiles=new Map(),apiState={},viewData={},config={},instanceBusy=false;
   const status=text=>{$('logImportStatus').textContent=text;};
   const setBusy=value=>{busy=value;for(const id of ['chooseLogFolder','resumeLogWatch','chooseLogFiles'])$(id).disabled=value;};
   async function call(message){const r=await request(message);if(!r?.ok)throw Error(r?.error||'ログの保存に失敗しました。');return r;}
+  $('collectOwnInstance').onclick=async()=>{
+    if(isDemo||instanceBusy)return;const owner=accountId;instanceBusy=true;$('collectOwnInstance').disabled=true;$('instanceRequestStatus').textContent='自分の現在地と参加者を確認中…';
+    try{const result=await call({type:'COLLECT_OWN_INSTANCE',accountId:owner});if(owner&&owner!==accountId)return;
+      if(result.busy)$('instanceRequestStatus').textContent='ほかの収集が動いています。完了後にもう一度取得してください。';
+      else{apiState=result.instance;$('instanceRequestStatus').textContent='自分の現在地を記録しました。'+(apiState.available?'参加者 '+apiState.count+'人の同席記録を保存しました。':apiState.message);await load();}
+    }catch(error){if(!owner||owner===accountId)$('instanceRequestStatus').textContent=error.message;}
+    finally{instanceBusy=false;$('collectOwnInstance').disabled=isDemo;}
+  };
+  function renderCurrent(){
+    const current=apiState.accountId===accountId?apiState:{},visit=[...(viewData.visits||[])].filter(v=>v.accountId===accountId).sort((a,b)=>b.lastSeenAt-a.lastSeenAt)[0],self=current.self||visit,place=self?.location;
+    const names={private:'プライベート',offline:'現実世界（ゲーム未接続）',web:'Web／アプリ',traveling:'移動中',unknown:'現在地を取得できませんでした'},worldName=place?.kind==='world'?(current.worldName||viewData.worlds?.find(w=>w.id===place.worldId)?.name||place.worldId):'';
+    $('instanceSelfPlace').replaceChildren();
+    if(worldName){const a=el('a',worldName);a.href='https://vrchat.com/home/world/'+encodeURIComponent(place.worldId);a.target='_blank';a.rel='noopener noreferrer';$('instanceSelfPlace').append(a);}else $('instanceSelfPlace').textContent=names[place?.kind]||'未取得';
+    $('instanceSelfId').textContent=place?.instanceId||'—';$('instanceSelfAt').textContent=date(self?.observedAt||self?.lastSeenAt);
+    const stale=current.at&&Date.now()-current.at>observationGap(config.pollSeconds),users=current.available&&Array.isArray(current.users)?current.users:[];
+    $('instanceCollectionStatus').textContent=current.at?date(current.at)+' JST · '+(stale?'古い観測です。再取得してください。 ':'')+current.message:'現在地・参加者を取得すると、ここに一覧と確認日時を表示します。';
+    const body=$('instanceCurrentUsers');body.replaceChildren();
+    for(const user of [...users].sort((a,b)=>a.displayName.localeCompare(b.displayName,'ja'))){
+      const tr=el('tr'),name=el('td'),a=el('a',user.displayName);a.href='https://vrchat.com/home/user/'+encodeURIComponent(user.id);a.target='_blank';a.rel='noopener noreferrer';name.append(a,el('span',user.id,'sub'));
+      const session=records.find(v=>v.source==='vrchat-instance-api'&&v.userId===user.id&&v.lastSeenAt===current.at),relation=user.isFriend==null?'未確認':user.isFriend?'フレンド':'非フレンド';
+      tr.append(name,el('td',relation),el('td',date(session?.startedAt)));body.append(tr);
+    }
+    if(!users.length){const tr=el('tr'),td=el('td',current.available?(Array.isArray(current.users)?'今回の一覧に自分以外の参加者はありません。':'更新前の記録です。再取得すると参加者一覧を表示します。'):'参加者一覧は未取得です。取得不可の場合も0人とは扱いません。');td.colSpan=3;tr.append(td);body.append(tr);}
+    $('collectOwnInstance').disabled=isDemo||instanceBusy;
+  }
   function stop(message='監視を停止しました。'){generation++;clearTimeout(watchTimer);watchTimer=null;watch=null;status(message);}
   function context(){if(isDemo)throw Error('デモではログを取り込みません。');if(!accountId)throw Error('表示アカウントを選択してください。');if(!$('logOwnerConfirmed').checked)throw Error('ログの本人と表示アカウントが一致していることを確認してください。');return {accountId,format:$('logFormat').value,offsetMinutes:Number($('logOffset').value)};}
   async function parse(file,settings,ticket){
@@ -76,7 +107,7 @@ export function createGameLogView({root,request,download,isDemo=false}){
     if(row.userId){const a=el('a','VRChatプロフィール ↗');a.href='https://vrchat.com/home/user/'+encodeURIComponent(row.userId);a.target='_blank';a.rel='noopener noreferrer';out.append(a,el('p',row.userId,'muted'));}
     const list=el('ol');for(const s of row.sessions.slice(0,200)){const r=s.records[0],item=el('li');item.append(el('strong',r.worldName||r.location.worldId),el('p',date(s.start)+' ～ '+date(s.end)+' JST · '+logDuration(s.end-s.start)+(s.records.some(v=>v.endedAt==null)?' · 終了未確認':'')),el('p',r.location.instanceId+' · '+[...new Set(s.records.map(v=>v.device==='api'?'In Instance API（観測区間）':v.device==='pc'?'PCログ':'Quest／Androidログ'))].join(' / '),'muted'));list.append(item);}out.append(list);}
   function render(){
-    if(root.hidden)return;const since=Number($('logRange').value)?Date.now()-Number($('logRange').value)*86400000:0,worlds=new Map(records.map(r=>[r.location.worldId,r.worldName||r.location.worldId])),previous=$('logWorld').value;
+    if(root.hidden)return;renderCurrent();const since=Number($('logRange').value)?Date.now()-Number($('logRange').value)*86400000:0,worlds=new Map(records.map(r=>[r.location.worldId,r.worldName||r.location.worldId])),previous=$('logWorld').value;
     $('logWorld').replaceChildren(new Option('すべて',''),...[...worlds].map(([id,name])=>new Option(name,id)));if(worlds.has(previous))$('logWorld').value=previous;
     rows=summarizeLogEncounters(records,{accountId,since,friends,relation:$('logRelation').value,device:$('logDevice').value,worldId:$('logWorld').value,query:$('logSearch').value,sort:$('logSort').value});
     $('logSummary').textContent=`${rows.length}人 · ${rows.reduce((n,r)=>n+r.count,0)}同席区間 · 合計 ${logDuration(rows.reduce((n,r)=>n+r.duration,0))}（相手ごとの延べ時間）`;
@@ -87,5 +118,5 @@ export function createGameLogView({root,request,download,isDemo=false}){
   $('logMore').onclick=()=>{limit+=100;render();};
   $('logSummaryCSV').onclick=()=>download('vrc-log-encounters-summary.csv',csv([['ユーザーID','表示名','現在のフレンド','同席回数','同席秒数','最初（JST）','最後（JST）','ワールド数','終了未確認を含む'],...rows.map(r=>[r.userId,r.name,r.isFriend,r.count,Math.floor(r.duration/1000),date(r.firstAt),date(r.lastAt),r.worlds,r.open])]),'text/csv;charset=utf-8');
   $('logSessionsCSV').onclick=()=>download('vrc-log-encounters-sessions.csv',csv([['ユーザーID','表示名','開始（JST）','終了／最終ログ（JST）','同席秒数','終了未確認','ワールドID','ワールド名','インスタンス','記録元'],...rows.flatMap(r=>r.sessions.map(s=>[r.userId,r.name,date(s.start),date(s.end),Math.floor((s.end-s.start)/1000),s.records.some(v=>v.endedAt==null),s.records[0].location.worldId,s.records[0].worldName,s.records[0].location.instanceId,[...new Set(s.records.map(v=>v.device))].join('/')]))]),'text/csv;charset=utf-8');
-  return {update(data,owner,nextEpoch=0,apiStatus={}){if(owner!==accountId||epoch!==nextEpoch){stop('表示アカウントのログを選択してください。');$('logOwnerConfirmed').checked=false;lastFiles.clear();selected='';records=[];loading++;}accountId=owner;epoch=nextEpoch;friends=data.friends||[];$('instanceCollectionStatus').textContent=apiStatus.accountId===owner?date(apiStatus.at)+' JST · '+apiStatus.message:'現在地と参加者一覧は次回の通常収集で確認します。取得できない区間は埋めません。';void load();},render:load,stop,async clear(){stop();lastFiles.clear();await sourceSetting(null);}};
+  return {update(data,owner,nextEpoch=0,apiStatus={},settings={}){if(owner!==accountId||epoch!==nextEpoch){stop('表示アカウントのログを選択してください。');$('logOwnerConfirmed').checked=false;$('instanceRequestStatus').textContent='';lastFiles.clear();selected='';records=[];loading++;}accountId=owner;epoch=nextEpoch;friends=[...(data.friends||[])];if(apiStatus.accountId===owner)for(const user of apiStatus.users||[])if(typeof user.isFriend==='boolean'){friends=friends.filter(f=>f.id!==user.id);friends.push({accountId:owner,id:user.id,isFriend:user.isFriend});}viewData=data;apiState=apiStatus;config=settings;void load();},render:load,stop,async clear(){stop();lastFiles.clear();await sourceSetting(null);}};
 }

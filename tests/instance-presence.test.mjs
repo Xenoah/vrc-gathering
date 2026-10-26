@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {currentUser,location} from '../extension/core.js';
-import {instanceRoster,reconcileInstancePresence,sameInstance} from '../extension/instance-presence.js';
+import {instanceRoster,reconcileInstancePresence,sameInstance,instanceViewState} from '../extension/instance-presence.js';
 import {mergeRecord,decodeChecks} from '../extension/sync-format.js';
 import {gasHarness} from './helpers/gas.mjs';
 const accountId='usr_instanceowner001',userId='usr_instancepeer0001',collectorId='col_instancefixture001',place='wrld_instanceworld01:123~region(jp)',at=Date.now()-1200000,config={accountId,collectorId,pollSeconds:180},own={id:accountId,presence:'online',location:location(place)};
@@ -28,6 +28,15 @@ test('current-user presence can provide an explicit Quest location, never a home
  const me=currentUser({id:accountId,displayName:'Self',presence:{id:accountId,world:'wrld_instanceworld01',instance:'123~region(jp)',platform:'android'},homeLocation:'wrld_homefixture001'},at);assert.equal(me.self.location.instanceId,'123~region(jp)');assert.equal(me.self.presence,'online');
  assert.equal(currentUser({id:accountId,location:'offline',presence:{world:'wrld_instanceworld01',instance:'123'}},at).self.location.kind,'offline');
  assert.equal(currentUser({id:accountId,presence:{id:userId,world:'wrld_instanceworld01',instance:'123'},homeLocation:'wrld_homefixture001'},at).self.location.kind,'unknown');
+ assert.equal(currentUser({id:accountId,location:'',presence:{world:'wrld_instanceworld01',instance:place}},at).self.location.instanceId,'123~region(jp)');
+ assert.equal(currentUser({id:accountId,presence:{world:'wrld_instanceworld01',instance:'wrld_anotherworld01:456'}},at).self.location.instanceId,'');
+ assert.equal(currentUser({id:accountId,location:'traveling',state:'online',presence:{world:'wrld_instanceworld01',instance:'123'}},at).self.location.kind,'traveling');
+});
+test('current-instance display state distinguishes unavailable from zero peers and preserves only normalized observations',()=>{
+ const me=currentUser({id:accountId,location:place+'~nonce(SECRET)',friends:[userId],authToken:'SECRET'},at),s=instanceViewState(me,snapshot());
+ assert.equal(s.users[0].isFriend,true);assert.equal(s.count,1);assert.equal(s.self.location.instanceId,'123~region(jp)');assert.ok(!JSON.stringify(s).includes('SECRET'));
+ const missing=instanceViewState(me,{at,available:false,reason:'Unavailable'});assert.equal(missing.count,null);assert.equal(missing.users.length,0);assert.equal(missing.self.location.kind,'world');
+ const empty=instanceViewState(me,snapshot(at,{...raw,users:[raw.users[0]],userCount:1}));assert.equal(empty.count,0);assert.equal(empty.available,true);assert.equal(empty.complete,true);
 });
 test('API observation intervals and check times survive GAS round-trip without extra rows',()=>{
  const gas=gasHarness(),hello=gas.request({protocol:2,action:'hello'}),first=reconcileInstancePresence([],snapshot(),config),next=reconcileInstancePresence(first,snapshot(at+180000),config),push=records=>gas.request({protocol:2,action:'push',datasetId:hello.datasetId,records});

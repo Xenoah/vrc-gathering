@@ -93,6 +93,51 @@ test('In Instance rejects a changed account/location and respects server backoff
   }
 });
 
+test('manual own-instance collection works while paused, initializes the account and never scans friends or another location',async()=>{
+  const peer='usr_instancepeer0001',place=wid+':123~region(jp)';let available=true;
+  const h=await harness(url=>url.pathname.endsWith('/auth/user')?{body:{...owner,location:place+'~nonce(SECRET_NONCE)'}}:url.pathname.includes('/instances/')?{body:{location:place,userCount:3,...(available?{users:[{id:uid,displayName:'Self'},{id:fid,displayName:'Friend'},{id:peer,displayName:'Nonfriend'}]}:{}),world:{id:wid,name:'Own world',capacity:16,assetUrl:'SECRET'}}}:good(url));
+  try{
+    await h.command({type:'SAVE',settings:{contact:'https://github.com/example'}});
+    const command={type:'COLLECT_OWN_INSTANCE',accountId:uid,location:wid+':999'};
+    const result=await h.command(command);assert.equal(result.ok,true);assert.equal(result.instance.users.length,2);assert.equal(result.instance.users.find(u=>u.id===peer).isFriend,false);
+    assert.equal(h.store.settings.enabled,false);assert.equal(h.saved.friends.length,0);assert.equal(h.saved.runs.length,0);assert.equal(h.saved.visits.length,1);assert.equal(h.saved.worlds[0].name,'Own world');assert.equal(h.saved.research.filter(r=>r.kind==='instanceEncounters').length,2);assert.equal(h.store.accountMeta[uid].displayName,owner.displayName);
+    assert.equal(h.calls.length,3);assert.ok(h.calls.every(c=>c.url.endsWith('/auth/user')||decodeURIComponent(c.url).endsWith('/instances/'+place)));assert.ok(!JSON.stringify([h.saved,h.store.instanceCollectionState]).includes('SECRET'));
+    const count=h.calls.length;assert.equal((await h.command(command)).ok,false);assert.equal(h.calls.length,count);
+    h.advance(180000);await h.command(command);assert.equal(h.saved.visits.length,1);assert.equal(h.saved.research.filter(r=>r.kind==='instanceEncounters').length,2);assert.equal(h.saved.research.find(r=>r.kind==='instanceEncounters').value.sampleCount,2);
+    available=false;h.advance(180000);const missing=await h.command(command);assert.equal(missing.ok,true);assert.equal(missing.instance.available,false);assert.equal(missing.instance.count,null);assert.equal(missing.instance.self.location.kind,'world');assert.equal(h.saved.visits.length,1);assert.ok(h.saved.research.filter(r=>r.kind==='instanceEncounters').every(r=>r.value.endReason==='unavailable'));
+  }finally{h.stop();}
+});
+
+test('manual own collection records offline or unavailable rosters, rejects identity switches and preserves API backoff',async()=>{
+  for(const mode of ['offline','private','403','500','account','location','wrong-selection','429']){
+    let checked=0;const place=wid+':123',h=await harness(url=>{
+      if(url.pathname.endsWith('/auth/user')){checked++;return {body:{...owner,id:mode==='account'&&checked>1?fid:uid,state:mode==='offline'?'offline':'online',location:['offline','private'].includes(mode)?mode:mode==='location'&&checked>1?wid+':456':place}};}
+      if(url.pathname.includes('/instances/'))return ['403','500','429'].includes(mode)?{status:Number(mode),headers:{'Retry-After':mode==='429'?'3600':''}}:{body:{location:place,userCount:2,users:[{id:uid,displayName:'Self'},{id:fid,displayName:'Friend'}]}};
+      throw Error('Unexpected path');
+    });
+    try{
+      await h.command({type:'SAVE',settings:{contact:'https://github.com/example'}});const command={type:'COLLECT_OWN_INSTANCE',accountId:mode==='wrong-selection'?fid:uid},result=await h.command(command);
+      assert.equal(result.ok,!['account','wrong-selection','429'].includes(mode),mode);assert.equal(h.saved.research.filter(r=>r.kind==='instanceEncounters').length,0,mode);
+      if(['account','wrong-selection','429'].includes(mode))assert.equal(h.saved.visits.length,0);else assert.ok(h.saved.visits.length>0);
+      if(['offline','private','wrong-selection'].includes(mode))assert.equal(h.calls.filter(c=>c.url.includes('/instances/')).length,0);
+      if(mode==='429'){assert.ok(h.store.state.cooldownUntil);h.advance(61000);const count=h.calls.length;assert.equal((await h.command(command)).ok,false);assert.equal(h.calls.length,count);}
+      if(mode==='location')assert.equal(h.saved.visits.at(-1).location.instanceId,'456');
+    }finally{h.stop();}
+  }
+});
+
+test('manual own collection is serialized with polling and discards an aborted request on reset',async()=>{
+  let release;const h=await harness(async url=>url.pathname.endsWith('/auth/user')?{body:await new Promise(resolve=>{release=()=>resolve({...owner,location:wid+':123'});})}:good(url));
+  try{await h.command({type:'SAVE',settings:{contact:'https://github.com/example'}});const pending=h.command({type:'COLLECT_OWN_INSTANCE',accountId:uid});await h.flush();
+    assert.equal((await h.command({type:'COLLECT_OWN_INSTANCE',accountId:uid})).busy,true);const reset=h.command({type:'CLEAR'});await h.flush();release();assert.equal((await pending).ok,false);assert.equal((await reset).ok,true);assert.equal(h.saved.visits.length,0);assert.equal(h.saved.research.length,0);
+  }finally{h.stop();}
+});
+
+test('ordinary collection discovers an own location that becomes available after the first identity check',async()=>{
+  let identities=0;const place=wid+':123',h=await harness(url=>url.pathname.endsWith('/auth/user')?{body:{...owner,...(++identities>1?{location:place}:{})}}:url.pathname.includes('/instances/')?{body:{location:place,userCount:2,users:[{id:uid,displayName:'Self'},{id:fid,displayName:'Friend'}]}}:good(url));
+  try{await h.start();assert.equal(h.store.instanceCollectionState.available,true);assert.equal(h.store.instanceCollectionState.self.location.instanceId,'123');assert.equal(h.saved.research.filter(r=>r.kind==='instanceEncounters').length,1);assert.equal(h.saved.visits.at(-1).location.instanceId,'123');}finally{h.stop();}
+});
+
 test('full cycle stores normalized observations, GET-only, credentials handled by browser',async()=>{
   const h=await harness(good);await h.start();
   assert.equal(h.store.state.phase,'ready');assert.equal(h.saved.friends.length,1);assert.equal(h.saved.events.length,1);

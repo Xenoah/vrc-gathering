@@ -3,6 +3,13 @@ import {normalizeRecord,logInstanceId,decodeChecks} from './sync-format.js';
 import {gapLimit,encodeChecks} from './observation-series.js';
 
 export const sameInstance=(a,b)=>a?.kind==='world'&&b?.kind==='world'&&a.worldId===b.worldId&&!!logInstanceId(a.instanceId)&&logInstanceId(a.instanceId)===logInstanceId(b.instanceId);
+export function instanceViewState(me,snapshot,worldName=''){
+  const self={...me.self,location:{...me.self.location,instanceId:logInstanceId(me.self.location.instanceId)}};
+  const friends=me.friends?new Set(me.friends):null;
+  return {accountId:me.id,at:snapshot.at,self,worldName:snapshot.worldName||worldName,available:snapshot.available,complete:snapshot.complete===true,
+    count:snapshot.available?snapshot.users.length:null,users:snapshot.available?snapshot.users.map(u=>({...u,isFriend:friends?friends.has(u.id):null})):[],
+    message:snapshot.available?'参加者 '+snapshot.users.length+'人を観測しました（自分を除く）。'+(snapshot.complete?'':'一覧の全件性は未確認です。'):snapshot.reason};
+}
 export function instanceRoster(raw,own,at){
   const expected=own.location;
   if(own.presence!=='online'||expected?.kind!=='world'||!expected.instanceId)return {at,available:false,reason:'現在地を確認できません。'};
