@@ -179,3 +179,23 @@ test('tab creation failures are bounded and cannot strand later pending profiles
   for(let i=0;i<10&&h.values.xFollowerQueue.phase!=='complete';i++){h.advance(X_QUEUE_TIMEOUT);await h.collector.tick();}
   assert.equal(h.values.xFollowerQueue.phase,'complete');assert.equal(h.values.xFollowerQueue.failed,4);assert.equal(h.creates,8);assert.equal(h.values.xFollowerQueue.errors.length,4);
 });
+
+test('discovery batch receipts survive completion and worker restart without opening duplicate tabs',async()=>{
+ const h=harness();await h.collector.enqueue(jobs('first'),{batchId:'scan:0'});const job=active(h)[0];await h.collector.observed(job.url,job.tabId);
+ h.collector=h.restart();await h.collector.enqueue(jobs('first'),{batchId:'scan:0'});assert.equal(h.creates,1);
+ h.advance(X_QUEUE_INTERVAL);await h.collector.enqueue(jobs('second'),{batchId:'scan:100'});assert.equal(h.creates,2);assert.equal(h.values.xFollowerQueue.total,2);
+ await h.collector.pause();const paused=await h.collector.enqueue(jobs('third'),{batchId:'scan:200'});assert.equal(paused.paused,true);assert.equal(h.values.xFollowerQueue.receipts.includes('scan:200'),false);
+});
+
+test('a receipt saved before dispatch still restarts pending jobs, and reset preserves the rate-limit clock',async()=>{
+ const h=harness();await h.collector.enqueue(jobs('fixture'),{batchId:'scan:0'});await h.collector.pause();
+ // Simulate the persisted enqueue before the worker got to dispatch it.
+ h.values.xFollowerQueue.paused=false;h.values.xFollowerQueue.nextAt=0;h.alarms.clear();h.collector=h.restart();
+ await h.collector.enqueue(jobs('fixture'),{batchId:'scan:0'});assert.equal(h.creates,2);assert.equal(active(h).length,1);
+ await h.collector.blocked(active(h)[0].tabId,'rate-limit');const retryAt=h.values.xFollowerQueue.retryAt;
+ await h.collector.clear();assert.equal(h.values.xFollowerQueue.retryAt,retryAt);await assert.rejects(h.collector.resume(),/待機中/);
+});
+test('a full X queue declines a discovery chunk without marking it delivered or dropping jobs',async()=>{
+ const h=harness();await h.collector.enqueue(jobs('initial'));const pending=Array.from({length:10000},(_,i)=>({url:url('fixture'+i),observedAt:0}));h.values.xFollowerQueue.items=pending;
+ const result=await h.collector.enqueue(jobs('later'),{batchId:'scan:100'});assert.equal(result.full,true);assert.equal(h.values.xFollowerQueue.items.length,10000);assert.equal(h.values.xFollowerQueue.receipts.includes('scan:100'),false);
+});

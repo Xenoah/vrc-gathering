@@ -43,12 +43,13 @@ async function harness(handler, allowCloud = true){
   const xProfiles=new vm.SourceTextModule(await fs.readFile(new URL('x-profile.js',root),'utf8'),{context});await xProfiles.link(()=>{});
   const followers=new vm.SourceTextModule(await fs.readFile(new URL('x-followers.js',root),'utf8'),{context});await followers.link(spec=>spec==='./sync-format.js'?format:xProfiles);
   const followerQueue=new vm.SourceTextModule(await fs.readFile(new URL('x-follower-collector.js',root),'utf8'),{context});await followerQueue.link(spec=>spec==='./x-followers.js'?followers:spec==='./x-follower-settings.js'?followerSettings:xProfiles);
+  const discovery=new vm.SourceTextModule(await fs.readFile(new URL('x-friend-discovery.js',root),'utf8'),{context});await discovery.link(spec=>spec==='./x-profile.js'?xProfiles:followerSettings);
   const series=new vm.SourceTextModule(await fs.readFile(new URL('observation-series.js',root),'utf8'),{context});await series.link(()=>format);
   const research=new vm.SourceTextModule(await fs.readFile(new URL('research-model.js',root),'utf8'),{context});await research.link(spec=>spec==='./sync-format.js'?format:series);
   const instancePresence=new vm.SourceTextModule(await fs.readFile(new URL('instance-presence.js',root),'utf8'),{context});await instancePresence.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:series);
   const notes=new vm.SourceTextModule(await fs.readFile(new URL('user-notes.js',root),'utf8'),{context});await notes.link(()=>format);
   const bg=new vm.SourceTextModule(await fs.readFile(new URL('background.js',root),'utf8'),{context});
-  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:spec==='./x-followers.js'?followers:spec==='./x-follower-collector.js'?followerQueue:spec==='./observation-series.js'?series:spec==='./research-model.js'?research:spec==='./user-notes.js'?notes:spec==='./instance-presence.js'?instancePresence:spec==='./x-follower-settings.js'?followerSettings:db);await bg.evaluate();
+  await bg.link(spec=>spec==='./core.js'?core:spec==='./sync-format.js'?format:spec==='./sync.js'?sync:spec==='./image-cache.js'?images:spec==='./settings-backup.js'?backup:spec==='./connections.js'?connections:spec==='./x-profile.js'?xProfiles:spec==='./x-followers.js'?followers:spec==='./x-follower-collector.js'?followerQueue:spec==='./x-friend-discovery.js'?discovery:spec==='./observation-series.js'?series:spec==='./research-model.js'?research:spec==='./user-notes.js'?notes:spec==='./instance-presence.js'?instancePresence:spec==='./x-follower-settings.js'?followerSettings:db);await bg.evaluate();
   async function flush(){for(let i=0;i<15;i++)await new Promise(setImmediate);}
   await flush();
   const command=message=>new Promise(resolve=>events.message(message,{id:'testextension',url:'chrome-extension://testextension/dashboard.html'},resolve));
@@ -470,4 +471,43 @@ test('official note detail checks enforce identity, retain saved content on fail
 test('official notes reject switched identity after fetching and honor rate limiting without erasing the snapshot',async()=>{
   let identities=0,mode='switch';const h=await harness(url=>url.pathname.endsWith('/auth/user')?{body:++identities===2&&mode==='switch'?{...owner,id:'usr_anotheraccount01'}:owner}:url.pathname.includes('/users/')?mode==='rate'?{status:429,headers:{'Retry-After':'120'},body:{}}:{body:{id:fid,note:'Never save'}}:good(url));
   try{h.store.accountMeta={[uid]:{displayName:'Owner'}};h.saved.friends.push({accountId:uid,id:fid});await h.command({type:'SAVE',settings:{contact:'https://github.com/example'}});const msg={type:'USER_NOTE',accountId:uid,userId:fid};assert.equal((await h.command(msg)).ok,false);assert.equal(h.saved.research.filter(r=>r.kind==='userNotes').length,0);mode='rate';assert.equal((await h.command(msg)).ok,false);assert.ok(h.store.state.cooldownUntil);const count=h.calls.length;await h.command(msg);assert.equal(h.calls.length,count);}finally{h.stop();}
+});
+
+test('all-friends X collection discovers links from the authenticated roster even before friend rows exist',async()=>{
+ const missing='usr_uncachedfriend01',noX='usr_nolinkfriend01',bad='usr_failedfriend01',ids=[fid,missing,noX,bad];
+ const h=await harness(url=>url.pathname.endsWith('/auth/user')?{body:{...owner,friends:ids}}:url.pathname.includes('/profile/')?url.pathname.endsWith(bad)?{status:500}:{body:{id:url.pathname.split('/').at(-1),bioLinks:url.pathname.endsWith(noX)?[]:['https://twitter.com/'+(url.pathname.endsWith(fid)?'freshfixture':'missingfixture')],bio:'@do_not_guess',authToken:'SECRET'}}:good(url));
+ try{
+  await h.command({type:'SAVE',settings:{contact:'https://github.com/example'}});
+  await h.command({type:'SAVE_X_FOLLOWERS',enabled:true,bulkScope:'friends'});
+  assert.equal((await h.command({type:'SAVE_X_FOLLOWERS',enabled:true,bulkScope:'invalid'})).ok,false);
+  assert.equal(h.store.xFollowerSettings.bulkScope,'friends');
+  assert.equal((await h.command({type:'COLLECT_X_FOLLOWERS',accountId:uid})).ok,true);await h.flush();
+  assert.equal(h.saved.friends.length,0);assert.equal(h.store.xFriendScan.total,4);assert.equal(h.store.xFriendScan.phase,'complete');assert.equal(h.store.xFriendScan.withLinks,2);assert.equal(h.store.xFriendScan.withoutLinks,1);assert.equal(h.store.xFriendScan.failed,1);
+  assert.equal(h.store.xFollowerQueue.total,2);assert.equal(h.store.xFollowerQueue.active.length,2);assert.equal(h.calls.filter(c=>c.url.endsWith('/profile/'+bad)).length,2);
+  assert.ok(!JSON.stringify(h.store).includes('SECRET'));assert.ok(h.calls.every(c=>c.options.method==='GET'));
+  for(let i=1;i<h.calls.length;i++)assert.ok(h.calls[i].at-h.calls[i-1].at>=2200);
+  const calls=h.calls.length;await h.command({type:'CLEAR_X_QUEUE'});assert.equal(h.store.xFriendScan.phase,'idle');assert.equal(h.store.xFollowerQueue.items.length,0);assert.equal(h.tabRows.size,0);assert.equal(Object.keys(h.store.xProfileCache).length,3);assert.equal(h.calls.length,calls);
+ }finally{h.stop();}
+});
+test('all-friends discovery pauses on account switches, missing roster, and rate limits without saving guessed links',async()=>{
+ for(const mode of ['account','roster','limit','removed']){
+  let auth=0;const h=await harness(url=>{
+   if(url.pathname.endsWith('/auth/user')){auth++;return {body:{...owner,...(mode==='roster'?{friends:null}:mode==='account'&&auth>1?{id:'usr_anotherowner01'}:mode==='removed'&&auth>1?{friends:[]}: {})}};}
+   if(url.pathname.includes('/profile/'))return {status:429,headers:{'Retry-After':'3600'}};
+   return good(url);
+  });
+  try{await h.command({type:'SAVE',settings:{contact:'https://github.com/example'}});await h.command({type:'SAVE_X_FOLLOWERS',enabled:true,bulkScope:'friends'});await h.command({type:'COLLECT_X_FOLLOWERS',accountId:uid});await h.flush();
+   assert.equal(h.store.xFriendScan.phase,mode==='removed'?'complete':'paused');assert.equal(Object.keys(h.store.xProfileCache||{}).length,0);assert.equal(h.tabRows.size,0);
+   if(mode==='limit'){assert.ok(h.store.state.cooldownUntil>h.store.state.lastRequestAt);const before=h.calls.length;await h.command({type:'RESUME_X_FOLLOWERS'});await h.flush();assert.equal(h.calls.length,before);assert.equal(h.store.xFriendScan.phase,'paused');}
+   if(mode==='removed')assert.equal(h.store.xFriendScan.skipped,1);
+  }finally{h.stop();}
+ }
+});
+test('stopping all-friend discovery aborts the pending request and disable prevents automatic resume',async()=>{
+ let started,release;const began=new Promise(r=>started=r),hold=new Promise(r=>release=r);
+ const h=await harness(async url=>{if(url.pathname.includes('/profile/')){started();await hold;return {body:{id:fid,bioLinks:['https://x.com/fixture']}};}return good(url);});
+ try{await h.command({type:'SAVE',settings:{contact:'https://github.com/example'}});await h.command({type:'SAVE_X_FOLLOWERS',enabled:true,bulkScope:'friends'});await h.command({type:'COLLECT_X_FOLLOWERS',accountId:uid});await began;
+  const stopping=h.command({type:'SAVE_X_FOLLOWERS',enabled:false});await h.flush();release();assert.equal((await stopping).ok,true);assert.equal(h.store.xFriendScan.phase,'paused');assert.equal(h.store.xFriendScan.items.length,1);assert.equal(Object.keys(h.store.xProfileCache||{}).length,0);
+  h.events.alarm({name:'vrc-x-friend-discovery'});await h.flush();assert.equal(h.store.xFriendScan.checked,0);
+ }finally{release();h.stop();}
 });

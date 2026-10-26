@@ -12,7 +12,8 @@ import { collectionSeries, stopSeries, updateSeries, compressRun } from './obser
 import { officialNote, noteChanges, noteChecks, NOTE_SCAN_INTERVAL, NOTE_CACHE_TTL } from './user-notes.js';
 import { reportSummary, scheduledBoundary, DAY } from './research-model.js';
 import {instanceRoster,reconcileInstancePresence,sameInstance,instanceViewState} from './instance-presence.js';
-import {xConcurrency,validateXConcurrency,xScope,xAccountId,validateXScope} from './x-follower-settings.js';
+import {xConcurrency,validateXConcurrency,xScope,xAccountId,validateXScope,xBulkScope,validateXBulkScope} from './x-follower-settings.js';
+import {createFriendDiscovery,X_DISCOVERY_ALARM} from './x-friend-discovery.js';
 
 const updateAccounts = createAccountUpdater(chrome.storage.local);
 let collectorPromise,activeReports,noteGeneration=0;
@@ -80,8 +81,37 @@ const followerQueue=createFollowerCollector({storage:chrome.storage.local,tabs:c
     return values;
   },
   isKnown:async url=>{const cache=(await chrome.storage.local.get('xProfileCache')).xProfileCache||{};return Object.values(cache).some(e=>readXCache(cache,e?.accountId,e?.userId)?.urls.includes(url));}});
+const friendDiscovery=createFriendDiscovery({storage:chrome.storage.local,alarms:chrome.alarms,
+  allowed:async()=>!profileResetting&&(await chrome.storage.local.get('xFollowerSettings')).xFollowerSettings?.enabled===true&&await chrome.permissions.contains({origins:X_FOLLOWER_ORIGINS}),
+  roster:async(accountId,signal)=>{
+    if(activeProfile||activeRun)return {ok:true,busy:true};
+    const abort=new AbortController(),cancel=()=>abort.abort();signal.addEventListener('abort',cancel,{once:true});if(signal.aborted)cancel();profileController=abort;
+    activeProfile=(async()=>{
+      const config=await configuration();if(!validContact(config.contact))throw Error('収集設定で連絡先を保存してください。');
+      await imageCollector.idle();abort.signal.throwIfAborted();await ensureUA(config);
+      const me=await identity(abort.signal,'フレンド名簿を確認中',{quiet:true});
+      if(me.id!==accountId)throw new ApiError('表示アカウントとVRChatのログインアカウントが異なります。',403);
+      if(!Array.isArray(me.friends))throw Error('フレンド名簿を確認できませんでした。');
+      return {ok:true,ids:me.friends};
+    })().catch(async error=>{
+      if(error.status===429){const s=await state();await patchState({cooldownUntil:Math.max(s.cooldownUntil||0,Date.now()+retryDelay(error.retryAfter,Date.now(),1))});}
+      return {ok:false,error:error.message};
+    }).finally(()=>{signal.removeEventListener('abort',cancel);activeProfile=null;profileController=null;});
+    return activeProfile;
+  },
+  profiles:async()=>(await chrome.storage.local.get('xProfileCache')).xProfileCache||{},
+  lookup:(accountId,userId,signal)=>lookupXProfile({accountId,userId},{requireFriend:true,signal}),
+  targets:async(accountId,ids)=>{const saved=await chrome.storage.local.get(['xProfileCache','xFollowerCache']);return followerTargets(saved.xProfileCache,saved.xFollowerCache,accountId,ids);},
+  deliver:(targets,batchId)=>followerQueue.enqueue(targets,{batchId})});
 async function collectFollowers({accountId,userId,force=false}){
   if(!USER_ID.test(accountId||'')||userId&&!USER_ID.test(userId))throw Error('対象ユーザーが不正です。');
+  const config=(await chrome.storage.local.get('xFollowerSettings')).xFollowerSettings||{};
+  if(!userId&&xBulkScope(config.bulkScope)==='friends'){
+    if(!validContact((await configuration()).contact))throw Error('収集設定で連絡先を保存してください。');
+    const queue=(await chrome.storage.local.get('xFollowerQueue')).xFollowerQueue;
+    if(queue?.retryAt>Date.now())throw Error('Xの制限による待機中です。時間を空けて再開してください。');
+    const result=await friendDiscovery.start(accountId);await followerQueue.resume();void friendDiscovery.tick();return result;
+  }
   const friends=await list('friends',accountId),saved=await chrome.storage.local.get(['xProfileCache','xFollowerCache']);
   const ids=userId?friends.filter(f=>f.id===userId).map(f=>f.id):friends.filter(f=>f.isFriend).map(f=>f.id);
   if(userId&&!ids.length)throw Error('記録済みのユーザーを選択してください。');
@@ -360,26 +390,28 @@ async function collectOwnInstance({accountId=''}) {
   }).finally(()=>{activeProfile=null;profileController=null;});
   return activeProfile;
 }
-async function lookupXProfile({accountId,userId,force=false}) {
+async function lookupXProfile({accountId,userId,force=false},{requireFriend=false,signal}={}) {
   if(typeof accountId!=='string'||typeof userId!=='string'||!USER_ID.test(accountId)||!USER_ID.test(userId))throw Error('ユーザーIDが不正です。');
   const cache=(await chrome.storage.local.get('xProfileCache')).xProfileCache||{},profile=readXCache(cache,accountId,userId);
   if(profileResetting)throw Error('記録を削除しています。完了してから開き直してください。');
   if(profile && Date.now()-profile.checkedAt<(force===true?60000:X_CACHE_TTL))return {ok:true,profile,cached:true};
   if(activeProfile || activeRun)return {ok:true,busy:true,profile};
-  const abort=new AbortController();profileController=abort;
+  const abort=new AbortController(),cancel=()=>abort.abort();signal?.addEventListener('abort',cancel,{once:true});if(signal?.aborted)cancel();profileController=abort;
   activeProfile=(async()=>{
-    if(!(await list('friends',accountId)).some(f=>f.id===userId))throw Error('このアカウントで記録されたユーザーを選択してください。');
+    if(!requireFriend&&!(await list('friends',accountId)).some(f=>f.id===userId))throw Error('このアカウントで記録されたユーザーを選択してください。');
     const config=await configuration();
     if(!validContact(config.contact))throw Error('プロフィールの取得には、収集設定で連絡先を保存してください。');
     await imageCollector.idle();abort.signal.throwIfAborted();await ensureUA(config);
     const me=await identity(abort.signal,'公開プロフィールのアカウント確認',{quiet:true});
-    if(me.id!==accountId)throw Error('表示アカウントとVRChatのログインアカウントが異なります。');
+    if(me.id!==accountId)throw new ApiError('表示アカウントとVRChatのログインアカウントが異なります。',403);
+    if(requireFriend&&!Array.isArray(me.friends))throw new ApiError('フレンド名簿を確認できませんでした。',403);
+    if(requireFriend&&!me.friends.includes(userId))return {ok:true,skipped:true};
     const raw=await request('/profile/'+userId,abort.signal,'公開プロフィールを取得中',{quiet:true});
     if(raw?.id!==userId)throw Error('プロフィールのユーザーIDが一致しません。');
     if(!Array.isArray(raw.bioLinks) && typeof raw.bio!=='string')throw Error('公開プロフィールからリンク情報を取得できませんでした。');
     const urls=extractXProfiles(raw);
     const after=await identity(abort.signal,'公開プロフィールのアカウント再確認',{quiet:true});
-    if(after.id!==accountId)throw Error('取得中にアカウントが切り替わったため、プロフィールを保存しませんでした。');
+    if(after.id!==accountId)throw new ApiError('取得中にアカウントが切り替わったため、プロフィールを保存しませんでした。',403);
     abort.signal.throwIfAborted();
     const entry={accountId,userId,urls,checkedAt:Date.now()};
     await mergeProfiles([normalizeRecord('profiles',{...entry,observedAt:entry.checkedAt})]);
@@ -387,8 +419,8 @@ async function lookupXProfile({accountId,userId,force=false}) {
     return {ok:true,profile:entry};
   })().catch(async error=>{
     if(error.status===429 || error.retryAfter!=null){const s=await state();await patchState({cooldownUntil:Math.max(s.cooldownUntil||0,Date.now()+retryDelay(error.retryAfter,Date.now(),1))});}
-    return {ok:false,profile,error:abort.signal.aborted?'プロフィールの取得を中止しました。':error.message};
-  }).finally(()=>{activeProfile=null;profileController=null;});
+    return {ok:false,profile,status:error.status||0,error:abort.signal.aborted?'プロフィールの取得を中止しました。':error.message};
+  }).finally(()=>{signal?.removeEventListener('abort',cancel);activeProfile=null;profileController=null;});
   return activeProfile;
 }
 async function lookupUserNote({accountId,userId,force=false,readOnly=false}) {
@@ -468,8 +500,9 @@ async function command(message) {
   if(message.type==='USER_NOTE')return lookupUserNote(message);
   if(message.type==='X_PROFILE')return lookupXProfile(message);
   if(message.type==='COLLECT_X_FOLLOWERS')return collectFollowers(message);
-  if(message.type==='PAUSE_X_FOLLOWERS')return followerQueue.pause();
-  if(message.type==='RESUME_X_FOLLOWERS')return followerQueue.resume();
+  if(message.type==='PAUSE_X_FOLLOWERS'){await friendDiscovery.pause();return followerQueue.pause();}
+  if(message.type==='RESUME_X_FOLLOWERS'){await followerQueue.resume();const result=await friendDiscovery.resume();void friendDiscovery.tick();return result;}
+  if(message.type==='CLEAR_X_QUEUE'){await friendDiscovery.clear();await followerQueue.clear();return {ok:true};}
   if(message.type==='SAVE_X_FOLLOWERS'){
     const enabled=message.enabled===true,previous=(await chrome.storage.local.get('xFollowerSettings')).xFollowerSettings||{};
     const concurrency=message.concurrency===undefined?xConcurrency(previous.concurrency):validateXConcurrency(message.concurrency);
@@ -478,9 +511,10 @@ async function command(message) {
     if(scope==='all'&&(!accountId||enabled&&!(await chrome.storage.local.get('accountMeta')).accountMeta?.[accountId]))throw Error('全員モードの保存先には、VRChatで取得済みのアカウントを選んでください。');
     if(enabled&&!await chrome.permissions.contains({origins:X_FOLLOWER_ORIGINS}))throw Error('Xへの接続を許可してください。');
     if(enabled!==previous.enabled||scope!==xScope(previous.scope)||accountId!==xAccountId(previous.accountId))followerGeneration++;
-    const settings={enabled,concurrency,scope,accountId};
+    const bulkScope=message.bulkScope===undefined?xBulkScope(previous.bulkScope):validateXBulkScope(message.bulkScope);
+    const settings={enabled,concurrency,scope,accountId,bulkScope};
     await chrome.storage.local.set({xFollowerSettings:settings});
-    if(!enabled)await followerQueue.pause();
+    if(!enabled){await friendDiscovery.pause();await followerQueue.pause();}
     await configureFollowerScript(enabled);if(enabled)void followerQueue.tick().catch(()=>{});return {ok:true,settings};
   }
   if (message.type === 'IMPORT_SETTINGS') {
@@ -490,7 +524,7 @@ async function command(message) {
     if (origins.length && !await chrome.permissions.contains({origins})) throw Error('設定の読み込みに必要な接続権限を許可してください。');
     await cloud.pause();
     try {
-      await pause();
+      await friendDiscovery.pause();await pause();
       if(imported.xFollowerSettings){followerGeneration++;await followerQueue.pause();await configureFollowerScript(imported.xFollowerSettings.enabled);}
       if (imported.settings.contact) await ensureUA(imported.settings);
       else await chrome.declarativeNetRequest.updateDynamicRules({removeRuleIds:[1,2],addRules:[]});
@@ -571,7 +605,7 @@ async function command(message) {
     try {
       const logEpoch=(await chrome.storage.local.get('logImportEpoch')).logImportEpoch||0;
       await chrome.storage.local.set({logImportEpoch:logEpoch+1,logImportState:{},instanceCollectionState:{}});
-      await followerQueue.clear();
+      await friendDiscovery.clear();await followerQueue.clear();
       await pause();
       await cloud.pause();
       await followerObservations.catch(()=>{});
@@ -596,7 +630,7 @@ let commandQueue = Promise.resolve();
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if(message.type==='X_FOLLOWERS_BLOCKED'){
     if(sender.id!==chrome.runtime.id||sender.frameId!==0||!Number.isInteger(sender.tab?.id)||!sender.url?.startsWith('https://x.com/')||!['login','rate-limit'].includes(message.reason))return false;
-    followerQueue.blocked(sender.tab.id,message.reason).then(()=>respond({ok:true}),()=>respond({ok:false}));return true;
+    followerQueue.blocked(sender.tab.id,message.reason).then(async blocked=>{if(blocked)await friendDiscovery.pause('Xのログイン・利用制限を確認してから再開してください。');respond({ok:true});},()=>respond({ok:false}));return true;
   }
   if(message.type==='X_FOLLOWERS_OBSERVED'){
     const generation=followerGeneration;const work=followerObservations.catch(()=>{}).then(()=>generation===followerGeneration?acceptFollowerObservation(message,sender):{ok:false});followerObservations=work;work.then(respond,()=>respond({ok:false}));return true;
@@ -613,6 +647,7 @@ chrome.tabs.onUpdated?.addListener((id,change)=>{if(change.status==='complete'||
 chrome.tabs.onRemoved?.addListener(id=>{void followerQueue.tabChanged(id).catch(()=>{});});
 chrome.action.onClicked.addListener(() => { chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') }); });
 chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === X_DISCOVERY_ALARM) void friendDiscovery.tick().catch(()=>{});
   if (alarm.name === X_QUEUE_ALARM) void followerQueue.tick().catch(()=>{});
   if (alarm.name === ALARM) void run();
   if (alarm.name === IMAGE_ALARM) void cacheImagesQuietly();
@@ -624,7 +659,7 @@ async function boot() {
   await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
   const followerSettings=(await chrome.storage.local.get('xFollowerSettings')).xFollowerSettings;
   if(followerSettings?.enabled)await configureFollowerScript(await chrome.permissions.contains({origins:X_FOLLOWER_ORIGINS}));
-  void followerQueue.tick().catch(()=>{});
+  void followerQueue.tick().catch(()=>{});void friendDiscovery.tick().catch(()=>{});
   const config = await configuration();
   await chrome.alarms.create('vrc-observer-reports',{periodInMinutes:60});
   void makeReports().catch(()=>{});

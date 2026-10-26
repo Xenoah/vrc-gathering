@@ -13,7 +13,7 @@ test('public bio link extraction never guesses handles or resolves third-party l
   assert.equal(extractXProfiles({bioLinks:Array.from({length:10},(_,i)=>'https://x.com/user'+i)}).length,5);
   assert.ok(!JSON.stringify(extractXProfiles(raw)).includes('SECRET'));
 });
-test('X cache is account-scoped, rejects future timestamps and unsafe links, and retains the newest 500',()=>{
+test('X cache is account-scoped, rejects future timestamps and unsafe links, and retains the newest 50000',()=>{
   const now=100000,entry={accountId:'owner',userId:'friend',checkedAt:now,urls:['https://x.com/safe','javascript:evil']};
   let cache=writeXCache({},entry,now);
   assert.deepEqual(readXCache(cache,'owner','friend',now).urls,['https://x.com/safe']);

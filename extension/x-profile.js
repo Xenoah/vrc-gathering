@@ -1,6 +1,6 @@
 // Only explicit public profile URLs are accepted. Never infer an account from a display name or @mention.
 export const X_CACHE_TTL = 86400000;
-export const X_CACHE_LIMIT = 500;
+export const X_CACHE_LIMIT = 50000;
 const RESERVED = new Set(['home','i','intent','share','search','explore','notifications','messages','settings','login','logout','signup','account','compose','hashtag','tos','privacy','about','download','jobs','ads','oauth','communities','lists','topics','spaces','help','support']);
 export function xProfileURL(value) {
   if(typeof value!=='string' || value.length>2048)return '';

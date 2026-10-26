@@ -36,7 +36,7 @@ export function initializeSettingsBackup({isDemo,download,stamp,call,onImported}
         ['同期キー',{file:'ファイルから読み込みます',existing:'この端末の保存済みキーを維持します',missing:'含まれていません（既存キーは引き継ぎません）'}[resolved.tokenSource]],
         ['Google同期',s.enabled ? '有効（保存後に送受信します）' : resolved.needsToken ? '無効（読み込み後に同期キーを設定してください）' : '無効'],
         ['画像キャッシュ',resolved.imageCacheSettings.enabled ? '有効' : '無効'],['Xフォロワー数',resolved.xFollowerSettings?(resolved.xFollowerSettings.enabled?'有効':'無効'):'この端末の設定を維持します']];
-      if(resolved.xFollowerSettings){const x=resolved.xFollowerSettings;fields.push(['Xの対象',x.scope==='all'?'開いたXプロフィール全員':'確認済みのXリンクのみ'],['Xの同時取得数',x.concurrency+'件']);if(x.scope==='all')fields.push(['全員モードの保存先',x.accountId]);}
+      if(resolved.xFollowerSettings){const x=resolved.xFollowerSettings;fields.push(['Xの対象',x.scope==='all'?'開いたXプロフィール全員':'確認済みのXリンクのみ'],['全取得の対象',x.bulkScope==='friends'?'フレンド全員（Xリンクも確認）':'確認済みリンクのみ'],['Xの同時取得数',x.concurrency+'件']);if(x.scope==='all')fields.push(['全員モードの保存先',x.accountId]);}
       $('settingsImportFields').replaceChildren();
       for (const [label,value] of fields) {
         const dt=document.createElement('dt'), dd=document.createElement('dd');

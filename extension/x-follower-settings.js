@@ -1,6 +1,11 @@
 export const DEFAULT_X_CONCURRENCY=3;
 export const MAX_X_CONCURRENCY=10;
 export const xScope=value=>value==='all'?'all':'linked';
+export const xBulkScope=value=>value==='friends'?'friends':'known';
+export function validateXBulkScope(value){
+  if(!['known','friends'].includes(value))throw Error('全取得の対象を選択してください。');
+  return value;
+}
 export const xAccountId=value=>typeof value==='string'&&/^(usr_[a-zA-Z0-9-]{8,64}|[a-zA-Z0-9]{8,32})$/.test(value)?value:'';
 export function validateXScope(value){
   if(!['linked','all'].includes(value))throw Error('Xの取得対象を選択してください。');

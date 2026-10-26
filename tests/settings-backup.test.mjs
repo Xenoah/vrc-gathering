@@ -15,7 +15,7 @@ test('X concurrency is exported/restored, defaults to three for old files, and r
 });
 test('all-profile mode and its destination round-trip, while old backups remain linked-only',()=>{
   const accountId='usr_scopefixture01',backup=createSettingsBackup({xFollowerSettings:{enabled:true,scope:'all',accountId,concurrency:5}});
-  assert.deepEqual(resolveSettingsBackup(backup).xFollowerSettings,{enabled:true,scope:'all',accountId,concurrency:5});
+  assert.deepEqual(resolveSettingsBackup(backup).xFollowerSettings,{enabled:true,scope:'all',bulkScope:'known',accountId,concurrency:5});
   for(const change of [{scope:'invalid'},{accountId:''},{accountId:null},{accountId:'https://x.com/person'}])assert.throws(()=>parseSettingsBackup(JSON.stringify({...backup,settings:{...backup.settings,xFollowers:{...backup.settings.xFollowers,...change}}})));
   delete backup.settings.xFollowers.scope;delete backup.settings.xFollowers.accountId;assert.equal(resolveSettingsBackup(backup).xFollowerSettings.scope,'linked');assert.equal(resolveSettingsBackup(backup).xFollowerSettings.accountId,'');
 });
@@ -65,4 +65,11 @@ test('unrecognized properties cannot become storage values or alter the prototyp
   const parsed=parseSettingsBackup(input), restored=resolveSettingsBackup(parsed,saved.cloudSync);
   assert.equal({}.polluted,undefined);assert.equal(Object.hasOwn(parsed,'__proto__'),false);
   assert.equal(parsed.state,undefined);assert.equal(restored.cloudSync.cooldownUntil,undefined);assert.equal(restored.settings.enabled,false);
+});
+
+test('bulk scope is independent of opened-profile scope and survives backup, with conservative defaults',()=>{
+ const backup=createSettingsBackup({...saved,xFollowerSettings:{enabled:true,scope:'linked',bulkScope:'friends',concurrency:10}});
+ assert.equal(resolveSettingsBackup(backup).xFollowerSettings.bulkScope,'friends');assert.equal(resolveSettingsBackup(backup).xFollowerSettings.scope,'linked');
+ delete backup.settings.xFollowers.bulkScope;assert.equal(resolveSettingsBackup(backup).xFollowerSettings.bulkScope,'known');
+ backup.settings.xFollowers.bulkScope='all';assert.throws(()=>validate(backup));
 });

@@ -16,7 +16,7 @@ export function followerTargets(profiles,metrics,accountId,userIds,now=Date.now(
   return [...seen].map(url=>({url,observedAt:values.get(url)?.observedAt||0,accounts:[accountId]})).sort((a,b)=>a.observedAt-b.observedAt||a.url.localeCompare(b.url));
 }
 export const activeFollowerJobs=q=>Array.isArray(q?.active)?q.active:q?.active?[q.active]:[];
-const empty=()=>({schema:2,items:[],active:[],done:[],errors:[],retries:0,concurrency:DEFAULT_X_CONCURRENCY,paused:false,phase:'idle',total:0,success:0,failed:0,skipped:0,consecutiveFailures:0,nextAt:0,retryAt:0,message:'',updatedAt:0});
+const empty=()=>({schema:2,items:[],active:[],done:[],receipts:[],errors:[],retries:0,concurrency:DEFAULT_X_CONCURRENCY,paused:false,phase:'idle',total:0,success:0,failed:0,skipped:0,consecutiveFailures:0,nextAt:0,retryAt:0,message:'',updatedAt:0});
 const timestamp=value=>Number.isSafeInteger(value)&&value>0?value:0;
 // Missing counts always precede refreshes, including requests from a user detail.
 // Interrupted attempts go behind untouched jobs in the same group.
@@ -118,9 +118,12 @@ export function createFollowerCollector({storage,tabs,alarms,allowed,isKnown,lat
     return schedule(q);
   }
   return {
-    enqueue:(targets,{single=false,force=false}={})=>serial(async()=>{
+    enqueue:(targets,{single=false,force=false,batchId=''}={})=>serial(async()=>{
       if(!await allowed())throw Error('収集設定でXの取得を有効にし、Xへの接続を許可してください。');
-      let q=await read();if(!q.active.length&&!q.items.length){const prior=q;q={...empty(),nextAt:prior.nextAt,retryAt:prior.retryAt};}
+      let q=await read();if(batchId&&q.receipts.includes(batchId)){await run(q);return {ok:true,added:0,queue:q};}
+      if(batchId&&q.paused)return {ok:true,paused:true,message:q.message};
+      if(batchId&&q.items.length+targets.length>LIMIT)return {ok:true,full:true};
+      if(!q.active.length&&!q.items.length&&!(batchId&&q.receipts.some(r=>r.split(':')[0]===batchId.split(':')[0]))){const prior=q;q={...empty(),nextAt:prior.nextAt,retryAt:prior.retryAt,receipts:prior.receipts};}
       const unique=new Map();for(const v of targets){const url=xProfileURL(v.url);if(url){const old=unique.get(url);unique.set(url,{observedAt:old?Math.min(old.observedAt,timestamp(v.observedAt)):timestamp(v.observedAt),accounts:[...new Set([...(old?.accounts||[]),...(v.accounts||[])])]});}}let added=0;
       for(const [url,{observedAt,accounts}] of unique){const existing=q.active.find(j=>j.url===url)||q.items.find(j=>j.url===url);
         if(existing){existing.accounts=[...new Set([...(existing.accounts||[]),...accounts])];existing.observedAt=Math.min(timestamp(existing.observedAt),observedAt);if(single)existing.single=true;continue;}
@@ -128,14 +131,15 @@ export function createFollowerCollector({storage,tabs,alarms,allowed,isKnown,lat
         if(q.items.length>=LIMIT)throw Error('取得待ちが上限に達しています。完了後にもう一度実行してください。');
         q.done=q.done.filter(v=>v!==url);q.items.push({url,single,accounts,observedAt,requestedAt:now()});q.total++;added++;
       }
+      if(batchId)q.receipts=[...q.receipts,batchId].slice(-32);
       if(!single&&q.retryAt<=now()){q.paused=false;q.consecutiveFailures=0;}await save(q);await run(q);return {ok:true,added,queue:q};
     }),
     tick:()=>serial(async()=>{const q=await read();if(q.active.length||q.items.length)return run(q);await alarms.clear(X_QUEUE_ALARM);return q;}),
     observed:(url,tabId)=>serial(async()=>{const q=await read(),job=q.active.find(j=>j.url===url)||q.items.find(j=>j.url===url);if(job){await finish(q,job,'success','@'+url.slice(14)+' を更新しました。');return run(q);}}),
-    blocked:(tabId,reason)=>serial(async()=>{const q=await read();if(!q.active.some(j=>j.tabId===tabId))return;await stop(q,reason==='rate-limit'?'Xの利用制限を検出したため停止しました。時間を空けて再開してください。':'Xでログインまたは確認操作が必要です。取得用タブを確認してください。',{keepTabId:tabId,retryAt:reason==='rate-limit'?now()+60000:0});}),
+    blocked:(tabId,reason)=>serial(async()=>{const q=await read();if(!q.active.some(j=>j.tabId===tabId))return;await stop(q,reason==='rate-limit'?'Xの利用制限を検出したため停止しました。時間を空けて再開してください。':'Xでログインまたは確認操作が必要です。取得用タブを確認してください。',{keepTabId:tabId,retryAt:reason==='rate-limit'?now()+60000:0});return true;}),
     pause:()=>serial(async()=>{const q=await read();await stop(q,'取得を停止しました。未処理のプロフィールは再開時に続けます。');return {ok:true};}),
     resume:()=>serial(async()=>{const q=await read();if(q.retryAt>now())throw Error('Xの制限による待機中です。1分以上空けて再開してください。');q.paused=false;q.consecutiveFailures=0;await save(q);await run(q);return {ok:true};}),
-    clear:()=>serial(async()=>{const q=await read();await save(empty());await alarms.clear(X_QUEUE_ALARM);for(const a of q.active)await close(a);}),
+    clear:()=>serial(async()=>{const q=await read();await save({...empty(),nextAt:q.nextAt,retryAt:q.retryAt});await alarms.clear(X_QUEUE_ALARM);for(const a of q.active)await close(a);}),
     tabChanged:tabId=>serial(async()=>{const q=await read();if(q.active.some(j=>j.tabId===tabId))return run(q);})
   };
 }

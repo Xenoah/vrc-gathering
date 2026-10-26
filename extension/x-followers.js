@@ -2,7 +2,7 @@ import { normalizeRecord, mergeRecord } from './sync-format.js';
 import { readXCache } from './x-profile.js';
 
 export const X_FOLLOWER_ORIGINS = ['https://x.com/*'];
-const CACHE_LIMIT=10000;
+const CACHE_LIMIT=50000;
 export function followerRecords(cache={},now=Date.now()) {
   const records=[];
   for(const value of Object.values(cache))try{records.push(normalizeRecord('xFollowers',value,now));}catch{}

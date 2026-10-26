@@ -12,7 +12,7 @@ import { createConnectionsView } from './connections-ui.js';
 import { createResearchView } from './research-ui.js';
 import { createAnalysisLab } from './analysis-lab-ui.js';
 import { followerTargets, activeFollowerJobs } from './x-follower-collector.js';
-import {xConcurrency,MAX_X_CONCURRENCY,xScope} from './x-follower-settings.js';
+import {xConcurrency,MAX_X_CONCURRENCY,xScope,xBulkScope} from './x-follower-settings.js';
 import { X_FOLLOWER_ORIGINS, followerRecords, bestFollowerMetric, followerText } from './x-followers.js';
 import { createUserNotesView } from './user-notes-ui.js';
 import { createXProfileView } from './x-profile-ui.js';
@@ -30,7 +30,7 @@ const presenceNames = { online:'ゲーム内', active:'Web／アプリ', offline
 const accessNames = { public:'Public', friends:'Friends', 'friends-plus':'Friends+', invite:'Invite', 'invite-plus':'Invite+', 'group-public':'Group Public', 'group-plus':'Group+', 'group-members':'Group', 'group-unknown':'Group', unknown:'不明' };
 let data = { friends:[], events:[], worlds:[] }, config = { ...DEFAULTS }, state = {}, selectedAccount = '', dirty = false, renderTimer, loaded = false, cloudConfig = {}, cloudState = {}, cloudDiagnostic = {}, syncPermissions = [], testingConnection = false, syncDirty = false, imageDirty = false, imageConfig = {}, imageRows = [], imageRevision = null, loadedImageRevision;
 let logImportEpoch=0,instanceCollectionState={};
-let xProfiles={},xMetrics={},xFollowerConfig={},xFollowerDirty=false,xFollowerQueue={},xSavedLimit=100,xSavedKey='';
+let xProfiles={},xMetrics={},xFollowerConfig={},xFollowerDirty=false,xFollowerQueue={},xFriendScan={},xSavedLimit=100,xSavedKey='';
 const demo = isDemo ? demoData() : null;
 initializeNavigationIcons();
 function node(tag, content, className) { const el = document.createElement(tag); if (content != null) el.textContent = content; if (className) el.className = className; return el; }
@@ -397,7 +397,7 @@ async function load() {
   if(isDemo){ data=demo;state=demo.state;config={...DEFAULTS,enabled:true};selectedAccount=demo.accountId;
     $('account').replaceChildren(new Option('デモアカウント',demo.accountId));$('demoFlag').hidden=false;
   } else {
-    const saved=await chrome.storage.local.get(['settings','state','accountMeta','cloudSync','cloudState','cloudDiagnostic','imageCacheSettings','imageCacheState','xProfileCache','xFollowerCache','xFollowerSettings','xFollowerQueue','logImportEpoch','instanceCollectionState']);logImportEpoch=saved.logImportEpoch||0;instanceCollectionState=saved.instanceCollectionState||{};xProfiles=saved.xProfileCache||{};xMetrics=Object.fromEntries(followerRecords(saved.xFollowerCache).map(r=>[r.key,r.value]));xFollowerConfig=saved.xFollowerSettings||{};xFollowerQueue=saved.xFollowerQueue||{};imageConfig=saved.imageCacheSettings||{};imageRevision=saved.imageCacheState||{};cloudConfig=saved.cloudSync||{};cloudState=saved.cloudState||{};cloudDiagnostic=saved.cloudDiagnostic||{};syncPermissions=await Promise.all(CLOUD_ORIGINS.map(origin=>chrome.permissions?.contains({origins:[origin]}).catch(()=>null) ?? null));config={...DEFAULTS,...saved.settings};state=saved.state||{};
+    const saved=await chrome.storage.local.get(['settings','state','accountMeta','cloudSync','cloudState','cloudDiagnostic','imageCacheSettings','imageCacheState','xProfileCache','xFollowerCache','xFollowerSettings','xFollowerQueue','xFriendScan','logImportEpoch','instanceCollectionState']);logImportEpoch=saved.logImportEpoch||0;instanceCollectionState=saved.instanceCollectionState||{};xProfiles=saved.xProfileCache||{};xMetrics=Object.fromEntries(followerRecords(saved.xFollowerCache).map(r=>[r.key,r.value]));xFollowerConfig=saved.xFollowerSettings||{};xFollowerQueue=saved.xFollowerQueue||{};xFriendScan=saved.xFriendScan||{};imageConfig=saved.imageCacheSettings||{};imageRevision=saved.imageCacheState||{};cloudConfig=saved.cloudSync||{};cloudState=saved.cloudState||{};cloudDiagnostic=saved.cloudDiagnostic||{};syncPermissions=await Promise.all(CLOUD_ORIGINS.map(origin=>chrome.permissions?.contains({origins:[origin]}).catch(()=>null) ?? null));config={...DEFAULTS,...saved.settings};state=saved.state||{};
     const accounts=saved.accountMeta||{};
     if(!selectedAccount || !accounts[selectedAccount])selectedAccount=state.accountId||Object.keys(accounts)[0]||'';
     $('account').replaceChildren(...Object.entries(accounts).map(([id,meta])=>new Option(meta.displayName||id,id)));
@@ -407,7 +407,7 @@ async function load() {
   }
   if($('detail').open&&detailAccount!==selectedAccount)$('detail').close();
   await loadImages();
-  if(!xFollowerDirty){$('xFollowerEnabled').checked=xFollowerConfig.enabled===true;$('xFollowerConcurrency').value=String(xConcurrency(xFollowerConfig.concurrency));$('xFollowerScope').value=xScope(xFollowerConfig.scope);
+  if(!xFollowerDirty){$('xFollowerEnabled').checked=xFollowerConfig.enabled===true;$('xFollowerConcurrency').value=String(xConcurrency(xFollowerConfig.concurrency));$('xFollowerScope').value=xScope(xFollowerConfig.scope);$('xFollowerBulkScope').value=xBulkScope(xFollowerConfig.bulkScope);
     const target=xFollowerConfig.accountId||selectedAccount,options=[...$('account').options].filter(o=>o.value).map(o=>new Option(o.textContent,o.value));
     if(target&&!options.some(o=>o.value===target))options.push(new Option(target+'（未登録）',target));
     $('xFollowerAccount').replaceChildren(...options);$('xFollowerAccount').value=target;
@@ -531,7 +531,7 @@ $('xFollowerForm').addEventListener('submit',async event=>{
   event.preventDefault();if(isDemo){toast('デモ画面では設定を保存しません。');return;}
   try{const enabled=$('xFollowerEnabled').checked;
     if(enabled&&!await chrome.permissions.request({origins:X_FOLLOWER_ORIGINS}))throw Error('Xへの接続が許可されませんでした。');
-    await call({type:'SAVE_X_FOLLOWERS',enabled,concurrency:Number($('xFollowerConcurrency').value),scope:$('xFollowerScope').value,accountId:$('xFollowerAccount').value},{rethrow:true});xFollowerDirty=false;
+    await call({type:'SAVE_X_FOLLOWERS',enabled,concurrency:Number($('xFollowerConcurrency').value),scope:$('xFollowerScope').value,bulkScope:$('xFollowerBulkScope').value,accountId:$('xFollowerAccount').value},{rethrow:true});xFollowerDirty=false;
     $('xFollowerNotice').textContent=enabled?'保存しました。Xプロフィールを開くとフォロワー数を記録します。':'取得を無効にしました。';await reload();
   }catch(error){$('xFollowerNotice').textContent=error.message;}
 });
@@ -554,13 +554,16 @@ async function enableXFollowers(){
 }
 function renderXCollection(){
   const targets=followerTargets(xProfiles,xMetrics,selectedAccount,data.friends.filter(f=>f.isFriend).map(f=>f.id)),missing=targets.filter(t=>!t.observedAt).length,old=targets.filter(t=>t.observedAt&&Date.now()-t.observedAt>=86400000).length,q=xFollowerQueue;
-  const active=activeFollowerJobs(q);
+  const active=activeFollowerJobs(q),scan=xFriendScan,scanning=!!scan.accountId&&!['complete','idle'].includes(scan.phase),scanRunning=scanning&&!scan.paused;
+  for(const n of document.querySelectorAll('[data-x-discovery]')){n.hidden=!scan.accountId;n.textContent=`全フレンドのリンク確認：${scan.checked||0}/${scan.total||0}人 · リンクあり ${scan.withLinks||0}人 / なし ${scan.withoutLinks||0}人 / 未確認 ${scan.failed||0}人 / 対象外 ${scan.skipped||0}人 · ${scan.message||''}`;}
+  for(const n of document.querySelectorAll('[data-x-discovery-errors]')){n.hidden=!scan.errors?.length;n.replaceChildren(node('summary','リンク未確認 '+(scan.errors?.length||0)+'人'),...((scan.errors||[]).slice(0,30).map(e=>node('p',e.userId+'：'+e.message))));}
   const progress=q.total?`取得キュー：${q.success||0}成功 / ${q.failed||0}未確認 / ${q.skipped||0}対象外 / 全${q.total}件 · 残り ${(q.items?.length||0)+active.length}件 · 再試行 ${q.retries||0}件 · 同時取得 ${active.length}/${xConcurrency(xFollowerConfig.concurrency)}件${active.length?'（'+active.map(j=>'@'+j.url.slice(14)).join('・')+'）':''} · ${q.message||''}`:'取得を開始すると進捗を表示します。';
   for(const n of document.querySelectorAll('[data-x-queue]'))n.textContent=`対象 ${targets.length}件（未取得 ${missing}件・24時間以上前 ${old}件） · ${progress}`;
   for(const n of document.querySelectorAll('[data-x-errors]')){n.hidden=!q.errors?.length;n.replaceChildren(node('summary','未確認のプロフィール '+(q.errors?.length||0)+'件'),...((q.errors||[]).slice(0,30).map(e=>node('p',e.message))));if(q.errors?.length>30)n.append(node('p','ほか '+(q.errors.length-30)+'件'));}
-  for(const b of document.querySelectorAll('[data-x-collect]'))b.disabled=isDemo||!targets.length||['running','waiting'].includes(q.phase);
-  for(const b of document.querySelectorAll('[data-x-pause]'))b.disabled=isDemo||!active.length&&!q.items?.length||q.phase==='paused';
-  for(const b of document.querySelectorAll('[data-x-resume]'))b.disabled=isDemo||!q.items?.length||q.phase!=='paused';
+  for(const b of document.querySelectorAll('[data-x-collect]'))b.disabled=isDemo||(!targets.length&&xBulkScope(xFollowerConfig.bulkScope)!=='friends')||!selectedAccount||scanRunning||['running','waiting'].includes(q.phase);
+  for(const b of document.querySelectorAll('[data-x-pause]'))b.disabled=isDemo||!scanRunning&&(!active.length&&!q.items?.length||q.phase==='paused');
+  for(const b of document.querySelectorAll('[data-x-resume]'))b.disabled=isDemo||!(scanning&&scan.paused)&&(!q.items?.length||q.phase!=='paused');
+  for(const b of document.querySelectorAll('[data-x-reset]'))b.disabled=isDemo||!scanning&&!active.length&&!q.items?.length;
 }
 for(const b of document.querySelectorAll('[data-x-collect]'))b.addEventListener('click',async()=>{b.disabled=true;try{await enableXFollowers();const result=await call({type:'COLLECT_X_FOLLOWERS',accountId:selectedAccount},{rethrow:true});toast(result.skipped?'確認済みのXリンクがありません。':result.queue?.phase==='paused'?result.queue.message:'Xフォロワー数の取得を開始しました。');await reload();}catch(error){toast(error.message);}finally{renderXCollection();}});
-for(const [selector,type] of [['[data-x-pause]','PAUSE_X_FOLLOWERS'],['[data-x-resume]','RESUME_X_FOLLOWERS']])for(const b of document.querySelectorAll(selector))b.addEventListener('click',async()=>{try{if(type==='RESUME_X_FOLLOWERS')await enableXFollowers();await call({type},{rethrow:true});await reload();}catch(error){toast(error.message);}});
+for(const [selector,type] of [['[data-x-pause]','PAUSE_X_FOLLOWERS'],['[data-x-resume]','RESUME_X_FOLLOWERS'],['[data-x-reset]','CLEAR_X_QUEUE']])for(const b of document.querySelectorAll(selector))b.addEventListener('click',async()=>{try{if(type==='RESUME_X_FOLLOWERS')await enableXFollowers();await call({type},{rethrow:true});await reload();}catch(error){toast(error.message);}});
