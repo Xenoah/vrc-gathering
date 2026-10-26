@@ -16,7 +16,7 @@ export function followerTargets(profiles,metrics,accountId,userIds,now=Date.now(
   return [...seen].map(url=>({url,observedAt:values.get(url)?.observedAt||0,accounts:[accountId]})).sort((a,b)=>a.observedAt-b.observedAt||a.url.localeCompare(b.url));
 }
 export const activeFollowerJobs=q=>Array.isArray(q?.active)?q.active:q?.active?[q.active]:[];
-const empty=()=>({schema:2,items:[],active:[],done:[],receipts:[],errors:[],retries:0,concurrency:DEFAULT_X_CONCURRENCY,paused:false,phase:'idle',total:0,success:0,failed:0,skipped:0,consecutiveFailures:0,nextAt:0,retryAt:0,message:'',updatedAt:0});
+const empty=()=>({schema:2,items:[],active:[],done:[],receipts:[],errors:[],retries:0,concurrency:DEFAULT_X_CONCURRENCY,paused:false,phase:'idle',total:0,success:0,failed:0,skipped:0,unavailable:0,consecutiveFailures:0,nextAt:0,retryAt:0,message:'',updatedAt:0});
 const timestamp=value=>Number.isSafeInteger(value)&&value>0?value:0;
 // Missing counts always precede refreshes, including requests from a user detail.
 // Interrupted attempts go behind untouched jobs in the same group.
@@ -53,7 +53,7 @@ export function createFollowerCollector({storage,tabs,alarms,allowed,isKnown,lat
   }
   async function finish(q,job,outcome,message){
     complete(q,job,outcome);q.message=message;
-    if(outcome==='failed')q.errors=[...q.errors.filter(e=>e.url!==job.url),{url:job.url,message,at:now()}].slice(-LIMIT);
+    if(outcome==='failed'||outcome==='skipped')q.errors=[...q.errors.filter(e=>e.url!==job.url),{url:job.url,message,at:now()}].slice(-LIMIT);
     await save(q);await close(job);
   }
   async function retryOrFinish(q,job,message){
@@ -67,7 +67,7 @@ export function createFollowerCollector({storage,tabs,alarms,allowed,isKnown,lat
   async function schedule(q){
     const pending=q.items.some(j=>runnable(q,j));
     q.phase=q.active.length?'running':pending?'waiting':q.items.length?'paused':'complete';
-    if(q.phase==='complete')q.message=q.failed?`全対象の処理が完了しました。${q.failed}件は数値を確認できませんでした。未確認一覧を参照してください。`:'全対象の取得が完了しました。';
+    if(q.phase==='complete')q.message=q.failed||q.unavailable?`全対象の処理が完了しました。${q.failed}件は未確認、${q.unavailable||0}件は凍結・不存在の表示で対象外です。未確認一覧を参照してください。`:'全対象の取得が完了しました。';
     await save(q);
     const times=q.active.map(a=>a.deadline);
     if(pending&&q.active.length<q.concurrency)times.push(q.nextAt);
@@ -136,6 +136,15 @@ export function createFollowerCollector({storage,tabs,alarms,allowed,isKnown,lat
     }),
     tick:()=>serial(async()=>{const q=await read();if(q.active.length||q.items.length)return run(q);await alarms.clear(X_QUEUE_ALARM);return q;}),
     observed:(url,tabId)=>serial(async()=>{const q=await read(),job=q.active.find(j=>j.url===url)||q.items.find(j=>j.url===url);if(job){await finish(q,job,'success','@'+url.slice(14)+' を更新しました。');return run(q);}}),
+    unavailable:(tabId,url,reason)=>serial(async()=>{
+      if(!['not-found','suspended'].includes(reason)||!await allowed())return {ok:false};
+      const q=await read(),job=q.active.find(a=>a.tabId===tabId&&a.url===url);if(!job)return {ok:false};
+      let tab;try{tab=await tabs.get(tabId);}catch{return {ok:false};}
+      if(xProfileURL(tab?.pendingUrl||tab?.url)!==url)return {ok:false};
+      q.unavailable=(q.unavailable||0)+1;
+      await finish(q,job,'skipped','@'+url.slice(14)+'：'+(reason==='suspended'?'凍結':'アカウントが存在しない')+'表示のためスキップしました。以前の数値は保持します。');
+      await run(q);return {ok:true};
+    }),
     blocked:(tabId,reason)=>serial(async()=>{const q=await read();if(!q.active.some(j=>j.tabId===tabId))return;await stop(q,reason==='rate-limit'?'Xの利用制限を検出したため停止しました。時間を空けて再開してください。':'Xでログインまたは確認操作が必要です。取得用タブを確認してください。',{keepTabId:tabId,retryAt:reason==='rate-limit'?now()+60000:0});return true;}),
     pause:()=>serial(async()=>{const q=await read();await stop(q,'取得を停止しました。未処理のプロフィールは再開時に続けます。');return {ok:true};}),
     resume:()=>serial(async()=>{const q=await read();if(q.retryAt>now())throw Error('Xの制限による待機中です。1分以上空けて再開してください。');q.paused=false;q.consecutiveFailures=0;await save(q);await run(q);return {ok:true};}),

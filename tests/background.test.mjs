@@ -482,6 +482,7 @@ test('all-friends X collection discovers links from the authenticated roster eve
   assert.equal((await h.command({type:'SAVE_X_FOLLOWERS',enabled:true,bulkScope:'invalid'})).ok,false);
   assert.equal(h.store.xFollowerSettings.bulkScope,'friends');
   assert.equal((await h.command({type:'COLLECT_X_FOLLOWERS',accountId:uid})).ok,true);await h.flush();
+  h.advance(1000);h.events.alarm({name:'vrc-x-friend-discovery'});await h.flush();
   assert.equal(h.saved.friends.length,0);assert.equal(h.store.xFriendScan.total,4);assert.equal(h.store.xFriendScan.phase,'complete');assert.equal(h.store.xFriendScan.withLinks,2);assert.equal(h.store.xFriendScan.withoutLinks,1);assert.equal(h.store.xFriendScan.failed,1);
   assert.equal(h.store.xFollowerQueue.total,2);assert.equal(h.store.xFollowerQueue.active.length,2);assert.equal(h.calls.filter(c=>c.url.endsWith('/profile/'+bad)).length,2);
   assert.ok(!JSON.stringify(h.store).includes('SECRET'));assert.ok(h.calls.every(c=>c.options.method==='GET'));
@@ -510,4 +511,54 @@ test('stopping all-friend discovery aborts the pending request and disable preve
   const stopping=h.command({type:'SAVE_X_FOLLOWERS',enabled:false});await h.flush();release();assert.equal((await stopping).ok,true);assert.equal(h.store.xFriendScan.phase,'paused');assert.equal(h.store.xFriendScan.items.length,1);assert.equal(Object.keys(h.store.xProfileCache||{}).length,0);
   h.events.alarm({name:'vrc-x-friend-discovery'});await h.flush();assert.equal(h.store.xFriendScan.checked,0);
  }finally{release();h.stop();}
+});
+
+test('normal profile-bearing responses cache X links without extra requests and never turn omitted fields into no-link results',async()=>{
+ let fields={bio:'Fixture https://twitter.com/bio_fixture',bioLinks:['https://x.com/link_fixture']};
+ const h=await harness(url=>url.pathname.endsWith('/friends')?{body:url.searchParams.get('offline')==='true'?[]:[{...online,...fields}]}:good(url));
+ try{await h.start();const p=()=>h.store.xProfileCache?.[uid+'/'+fid];assert.deepEqual(p().urls,['https://x.com/link_fixture','https://x.com/bio_fixture']);assert.equal(h.calls.filter(c=>c.url.includes('/profile/')).length,0);
+  const calls=h.calls.length;assert.equal((await h.command({type:'X_PROFILE',accountId:uid,userId:fid})).cached,true);assert.equal(h.calls.length,calls);
+  const previous=structuredClone(p());fields={bio:''};h.advance(61000);await h.command({type:'POLL'});await h.flush();assert.deepEqual(p(),previous);
+  fields={bio:'',bioLinks:[]};h.advance(61000);await h.command({type:'POLL'});await h.flush();assert.deepEqual(p().urls,[]);assert.ok(p().checkedAt>previous.checkedAt);
+ }finally{h.stop();}
+});
+test('opportunistic links are discarded with an interrupted collection or account switch',async()=>{
+ for(const mode of ['account','page']){let auth=0;const many=Array.from({length:100},(_,i)=>({...online,id:'usr_fixture'+String(i).padStart(6,'0'),bio:'',bioLinks:['https://x.com/fixture']}));
+  const h=await harness(url=>url.pathname.endsWith('/auth/user')?{body:{...owner,id:mode==='account'&&++auth>1?'usr_wrongowner001':uid}}:url.pathname.endsWith('/friends')?mode==='page'&&url.searchParams.get('offset')!=='0'?{status:500}:{body:mode==='page'?many:[{...online,bio:'',bioLinks:['https://x.com/fixture']}]}:good(url));
+  try{await h.start();assert.equal(Object.keys(h.store.xProfileCache||{}).length,0);}finally{h.stop();}
+ }
+});
+test('an existing user-note profile fetch also supplies X links for later detail and bulk retrieval',async()=>{
+ const h=await harness(url=>url.pathname.includes('/users/')?{body:{id:fid,displayName:'Fixture',note:'Fixture note',bio:'',bioLinks:['https://twitter.com/fixture'],authToken:'SECRET'}}:good(url));
+ try{h.store.accountMeta={[uid]:{displayName:'Owner'}};h.saved.friends.push({accountId:uid,id:fid});await h.command({type:'SAVE',settings:{contact:'https://github.com/example'}});
+  assert.equal((await h.command({type:'USER_NOTE',accountId:uid,userId:fid})).ok,true);assert.deepEqual(h.store.xProfileCache[uid+'/'+fid].urls,['https://x.com/fixture']);const count=h.calls.length;
+  assert.equal((await h.command({type:'X_PROFILE',accountId:uid,userId:fid})).cached,true);assert.equal(h.calls.length,count);assert.equal(count,3);assert.ok(!JSON.stringify(h.store).includes('SECRET'));
+ }finally{h.stop();}
+});
+test('ten uncached friends use twelve batch calls plus one roster call, while preserving spacing and account checks',async()=>{
+ const ids=Array.from({length:10},(_,i)=>'usr_fixture'+String(i).padStart(6,'0'));
+ const h=await harness(url=>url.pathname.endsWith('/auth/user')?{body:{...owner,friends:ids}}:url.pathname.includes('/profile/')?{body:{id:url.pathname.split('/').at(-1),bio:'',bioLinks:['https://x.com/f'+url.pathname.slice(-6)]}}:good(url));
+ try{await h.command({type:'SAVE',settings:{contact:'https://github.com/example'}});await h.command({type:'SAVE_X_FOLLOWERS',enabled:true,bulkScope:'friends'});await h.command({type:'COLLECT_X_FOLLOWERS',accountId:uid});await h.flush();
+  assert.equal(h.store.xFriendScan.phase,'complete');assert.equal(h.store.xFriendScan.withLinks,10);assert.equal(h.calls.length,13);assert.equal(h.calls.filter(c=>c.url.endsWith('/auth/user')).length,3);assert.equal(h.store.xFollowerQueue.total,10);
+  for(let i=1;i<h.calls.length;i++)assert.ok(h.calls[i].at-h.calls[i-1].at>=2200);
+ }finally{h.stop();}
+});
+test('batch account switches and mid-batch limits discard every staged link while retaining pending work',async()=>{
+ for(const mode of ['switch','limit','missing']){const ids=[fid,'usr_fixturefriend02'];let fetched=0;
+  const h=await harness(url=>{
+   if(url.pathname.endsWith('/auth/user'))return {body:{...owner,id:mode==='switch'&&fetched===2?'usr_otherowner001':uid,friends:mode==='missing'&&fetched===2?null:ids}};
+   if(url.pathname.includes('/profile/')){fetched++;return mode==='limit'&&fetched===2?{status:429,headers:{'Retry-After':'3600'}}:{body:{id:url.pathname.split('/').at(-1),bioLinks:['https://x.com/fixture']}};}return good(url);
+  });
+  try{await h.command({type:'SAVE',settings:{contact:'https://github.com/example'}});await h.command({type:'SAVE_X_FOLLOWERS',enabled:true,bulkScope:'friends'});await h.command({type:'COLLECT_X_FOLLOWERS',accountId:uid});await h.flush();assert.equal(h.store.xFriendScan.phase,'paused');assert.equal(h.store.xFriendScan.items.length,2);assert.equal(Object.keys(h.store.xProfileCache||{}).length,0);assert.equal(h.tabRows.size,0);}
+  finally{h.stop();}
+ }
+});
+test('unavailable X reports are bound to the active tab and canonical profile, never overwrite old counts',async()=>{
+ const h=await harness(good);
+ try{await h.start();const now=h.store.accountMeta[uid].lastSuccessAt,url='https://x.com/fixture';h.store.xProfileCache={[uid+'/'+fid]:{accountId:uid,userId:fid,checkedAt:now,urls:[url,'https://x.com/otherfixture']}};h.store.xFollowerCache={old:{accountId:uid,url,followers:123,approximate:false,source:'x-profile',observedAt:now}};
+  await h.command({type:'SAVE_X_FOLLOWERS',enabled:true});await h.command({type:'COLLECT_X_FOLLOWERS',accountId:uid});const job=h.store.xFollowerQueue.active.find(j=>j.url===url),sender={id:'testextension',url:h.tabRows.get(job.tabId).url,frameId:0,tab:{id:job.tabId}},message={type:'X_FOLLOWERS_UNAVAILABLE',url,reason:'not-found'};
+  for(const change of [{frameId:1},{url:'https://evil.example/fixture'},{id:'otherextension'}])assert.equal(h.events.message(message,{...sender,...change},()=>assert.fail('invalid sender responded')),false);
+  const report=(m,s)=>new Promise(resolve=>h.events.message(m,s,resolve));assert.equal((await report({...message,url:'https://x.com/otherfixture'},{...sender,url:'https://x.com/otherfixture'})).ok,false);
+  const old=structuredClone(h.store.xFollowerCache);assert.equal((await report(message,sender)).ok,true);assert.equal((await report(message,sender)).ok,false);assert.deepEqual(h.store.xFollowerCache,old);assert.equal(h.store.xFollowerQueue.unavailable,1);assert.equal(h.store.xFollowerQueue.skipped,1);assert.equal(h.store.xFollowerQueue.retries,0);assert.equal(h.store.xFollowerQueue.paused,false);assert.equal(h.store.xFollowerQueue.active.length,1);assert.match(h.store.xFollowerQueue.errors[0].message,/存在しない/);
+ }finally{h.stop();}
 });

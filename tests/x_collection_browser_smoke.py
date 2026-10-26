@@ -54,9 +54,11 @@ async def main():
       path=route.request.url.split('x.com/',1)[1].split('#')[0].split('?')[0];requests.append(route.request.url)
       if path not in counts:raise Exception('Unexpected X request '+path)
       if modes.get(path)=='limit':body='<main data-testid="primaryColumn"><div role="alert">Rate limit exceeded</div></main>'
+      elif modes.get(path)=='suspended':body='<main data-testid="primaryColumn"><div data-testid="emptyState"><div dir="ltr"><span>Account suspended</span></div></div></main>'
+      elif modes.get(path)=='not-found':body='<main data-testid="primaryColumn"><div data-testid="emptyState"><div dir="ltr"><span>This account doesn’t exist</span></div><p>Try searching for another.</p></div></main>'
       elif modes.get(path)=='hold':body='<main>Loading</main>'
       else:body=profile_body(path)
-      await route.fulfill(status=200,content_type='text/html',body='<html><body>'+body+'</body></html>')
+      await route.fulfill(status=200,content_type='text/html; charset=utf-8',body='<html><body>'+body+'</body></html>')
     await context.route('https://x.com/**',x_route)
     worker=await context.new_page();worker.on('pageerror',lambda e:errors.append(str(e)))
     await worker.goto(base+'/dashboard.html');await worker.locator('[data-tab=friends]').click()
@@ -165,6 +167,19 @@ async def main():
     await expect(worker.locator('#friendsPanel [data-x-errors]')).to_contain_text('@batch00')
     await worker.screenshot(path='/tmp/vrc-x-batch-complete.png',full_page=True)
     await worker.evaluate('(cache)=>chrome.storage.local.set({xProfileCache:cache})',original_profiles)
+    # Terminal profile pages are skipped immediately, without retries or changing saved counts.
+    previous=await worker.evaluate("Object.fromEntries(Object.entries(fixture.values.xFollowerCache).filter(([key])=>key.endsWith(':old')||key.endsWith(':fresh')))")
+    modes['old']='suspended';modes['fresh']='not-found';before=len(created)
+    await next_job();await worker.locator('#friendsPanel [data-x-collect]').click()
+    await worker.wait_for_function("fixture.values.xFollowerQueue.phase==='complete' && fixture.values.xFollowerQueue.unavailable===2")
+    state=await worker.evaluate('fixture.values.xFollowerQueue')
+    assert (state['total'],state['success'],state['skipped'],state['retries'])==(6,4,2,0),state
+    assert len(created)-before==6
+    assert previous==await worker.evaluate("Object.fromEntries(Object.entries(fixture.values.xFollowerCache).filter(([key])=>key.endsWith(':old')||key.endsWith(':fresh')))")
+    await expect(worker.locator('#friendsPanel [data-x-errors]')).to_contain_text('凍結')
+    await expect(worker.locator('#friendsPanel [data-x-errors]')).to_contain_text('存在しない')
+    await worker.screenshot(path='/tmp/vrc-x-unavailable.png',full_page=True)
+    modes.pop('fresh',None)
     # Explicit page rate-limit notice pauses, preserving the previous value and pending jobs.
     modes['old']='limit';await worker.locator('#friendsPanel [data-x-collect]').click();await next_job();await next_job()
     await worker.wait_for_function("fixture.values.xFollowerQueue?.phase==='paused'")
@@ -176,6 +191,6 @@ async def main():
     await worker.set_viewport_size({'width':390,'height':844});assert await worker.evaluate('document.documentElement.scrollWidth<=innerWidth')
     await worker.screenshot(path='/tmp/vrc-x-collection-mobile.png',full_page=True)
     assert not errors,errors
-    await browser.close();print('PASS: opt-in all-profile collection, unlinked rows/search/sort, scope switching and backup/restore, three/ten concurrent tabs, 30-target completion, bounded retries, missing-first, reload/mobile, detail refresh, preserved manual tabs, rate-limit pause, no X API')
+    await browser.close();print('PASS: opt-in all-profile collection, unlinked rows/search/sort, scope switching and backup/restore, three/ten concurrent tabs, 30-target completion, bounded retries, missing-first, reload/mobile, detail refresh, preserved manual tabs, suspended/nonexistent skips, rate-limit pause, no X API')
 try:asyncio.run(main())
 finally:server.shutdown()

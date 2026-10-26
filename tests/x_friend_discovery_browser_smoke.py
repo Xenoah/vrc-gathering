@@ -46,6 +46,8 @@ async def main():
   await page.locator('#friendsPanel [data-x-pause]').click();await page.wait_for_function("fixture.values.xFriendScan.phase==='paused'")
   assert await page.evaluate('fixture.values.xFriendScan.items.length')==4
   await page.evaluate('fixture.hold=false');await page.locator('#friendsPanel [data-x-resume]').click()
+  await page.wait_for_function("fixture.values.xFriendScan.phase==='waiting' && fixture.values.xFriendScan.checked===3")
+  await page.evaluate("()=>{fixture.offset+=2000;fixture.alarm({name:'vrc-x-friend-discovery'});}")
   await page.wait_for_function("fixture.values.xFriendScan.phase==='complete' && fixture.values.xFollowerQueue.active.length===2")
   await expect(page.locator('#friendsPanel [data-x-discovery]')).to_contain_text('4/4人')
   await expect(page.locator('#friendsPanel [data-x-discovery]')).to_contain_text('リンクあり 2人 / なし 1人 / 未確認 1人')

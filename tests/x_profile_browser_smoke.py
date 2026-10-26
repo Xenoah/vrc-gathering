@@ -112,6 +112,20 @@ try:
             assert parser.evaluate("VRCFollowerParser.read(document,location.pathname)") is None
             parser.evaluate("document.querySelector('[data-testid=UserName] span').textContent='@example';document.querySelector('a[href$=verified_followers]').remove()")
             assert parser.evaluate("VRCFollowerParser.read(document,location.pathname)") is None
+            # Known terminal headings must not be confused with posts, bios, hidden text or sidebars.
+            for heading,reason in [("This account doesn’t exist",'not-found'),("This account doesn't exist",'not-found'),('Account suspended','suspended'),('このアカウントは存在しません','not-found'),('アカウントは凍結されています','suspended')]:
+                html=f'<main data-testid="primaryColumn"><div data-testid="emptyState"><div dir="ltr"><span>{heading}</span></div><p>Try searching for another.</p></div></main>'
+                parser.evaluate('(html)=>document.body.innerHTML=html',html)
+                assert parser.evaluate("VRCFollowerParser.unavailable(document,location.pathname)")==reason
+                assert parser.evaluate("VRCFollowerParser.unavailable(document,'/home')")==''
+                assert parser.evaluate("VRCFollowerParser.read(document,location.pathname)") is None
+            for body in ['<article><h2>Account suspended</h2></article>','<div data-testid="tweet"><h2>Account suspended</h2></div>','<div data-testid="UserName"><h2>Account suspended</h2></div>','<div data-testid="UserDescription"><h2>Account suspended</h2></div>','<h2 hidden>Account suspended</h2>','<h2 data-hidden>Account suspended</h2>','<h2>These posts are protected</h2>','<h2>Something went wrong</h2>']:
+                parser.evaluate('(body)=>{document.body.innerHTML=`<main data-testid="primaryColumn">${body}</main><aside><h2>Account suspended</h2></aside>`;for(const e of document.querySelectorAll("[data-hidden]"))e.style.visibility="hidden";}',body)
+                assert parser.evaluate("VRCFollowerParser.unavailable(document,location.pathname)")== '',body
+            parser.evaluate('''()=>{observations=[];document.body.innerHTML='<main data-testid="primaryColumn"><h2>Account suspended</h2></main>';}''')
+            parser.wait_for_function("()=>observations.some(v=>v.type==='X_FOLLOWERS_UNAVAILABLE'&&v.reason==='suspended')")
+            assert parser.evaluate("observations.find(v=>v.type==='X_FOLLOWERS_UNAVAILABLE').url")=='https://x.com/example'
+            assert not parser.evaluate("observations.some(v=>v.type==='X_FOLLOWERS_OBSERVED')")
             parser.close()
             assert not errors,errors
             print('PASS: actual worker/API-to-dialog links, new tab, local cache across reload, no presence refresh, removal, login errors, mobile, late response isolation, follower sorting/live updates, five status colors and exact/rounded X header parsing')

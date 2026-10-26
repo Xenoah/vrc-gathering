@@ -5,7 +5,7 @@ export const X_DISCOVERY_ALARM='vrc-x-friend-discovery';
 const empty=()=>({schema:1,id:'',accountId:'',phase:'idle',paused:false,initialized:false,items:[],eligible:[],targets:null,cursor:0,total:0,checked:0,withLinks:0,withoutLinks:0,failed:0,skipped:0,errors:[],nextAt:0,current:'',message:''});
 // The current item stays pending until its result is saved. Restarts can reuse a
 // profile already written by the previous worker; delivery receipts avoid duplicate X jobs.
-export function createFriendDiscovery({storage,alarms,allowed,roster,profiles,lookup,targets,deliver,now=()=>Date.now(),uuid=()=>crypto.randomUUID()}){
+export function createFriendDiscovery({storage,alarms,allowed,roster,profiles,lookup,lookupBatch,targets,deliver,now=()=>Date.now(),uuid=()=>crypto.randomUUID()}){
   let chain=Promise.resolve(),controller,epoch=0;
   const serial=work=>{const next=chain.then(work);chain=next.catch(()=>{});return next;};
   const read=async()=>{const q=(await storage.get('xFriendScan')).xFriendScan;return q?.schema===1?{...empty(),...q}:empty();};
@@ -30,9 +30,17 @@ export function createFriendDiscovery({storage,alarms,allowed,roster,profiles,lo
         }
         q.items=missing.sort((a,b)=>a.checkedAt-b.checkedAt||a.userId.localeCompare(b.userId));q.initialized=true;await save(q);
       }
-      for(let n=0;n<10&&q.items.length&&live();n++){
+      let batch;
+      if(lookupBatch&&q.items.length){
+        q.phase='running';q.current=q.items[0].userId;q.message='フレンドのXリンクを確認中（最大10人ずつ）…';await save(q);
+        batch=await lookupBatch(q.accountId,q.items.slice(0,10),signal);if(!live())return;
+        if(batch.busy){q.phase='waiting';q.current='';q.message='ほかのVRChat収集の完了を待っています。';await save(q);await wake();return q;}
+        if(!batch.ok)return pauseState(q,batch.error||'プロフィールの取得を確認できませんでした。');
+        if(!Array.isArray(batch.results)||batch.results.length!==Math.min(10,q.items.length)||batch.results.some((r,i)=>r.userId!==q.items[i].userId))throw Error('Invalid profile batch');
+      }
+      for(let n=0;n<(batch?batch.results.length:10)&&q.items.length&&live();n++){
         const job=q.items[0];q.current=job.userId;q.phase='running';q.message='フレンドのXリンクを確認中…';await save(q);await wake(now()+90000);
-        const result=await lookup(q.accountId,job.userId,signal);if(!live())return;
+        const result=batch?batch.results[n]:await lookup(q.accountId,job.userId,signal);if(!live())return;
         if(result.busy){q.phase='waiting';q.message='ほかのVRChat収集の完了を待っています。';break;}
         if(!result.ok&&[401,403,429].includes(result.status))return pauseState(q,result.error);
         q.items.shift();q.current='';

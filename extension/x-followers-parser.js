@@ -19,6 +19,21 @@ globalThis.VRCFollowerParser = Object.freeze({
     for(const error of document.querySelectorAll('[role="alert"],[data-testid="error-detail"]'))if(!error.closest('article,[data-testid="tweet"]')&&error.getClientRects().length&&/(rate limit|rate limited|利用制限に達|アクセス制限)/i.test(error.textContent))return 'rate-limit';
     return '';
   },
+  unavailable(document,pathname) {
+    if(!this.profile(pathname))return '';
+    const area=document.querySelector('[data-testid="primaryColumn"]');if(!area)return '';
+    // Exact, visible error headings in the profile column. Tweets, bios and
+    // sidebar text are not evidence that the account itself is unavailable.
+    const selector='[data-testid="emptyStateHeader"],[data-testid="emptyState"] [dir],[data-testid="emptyState"] span,h1,h2,[role="heading"]';
+    for(const heading of area.querySelectorAll(selector)){
+      if(heading.closest('article,[data-testid="tweet"],[data-testid="UserName"],[data-testid="UserDescription"],[role="dialog"]')||!heading.getClientRects().length)continue;
+      if(typeof getComputedStyle==='function'&&getComputedStyle(heading).visibility==='hidden')continue;
+      const text=heading.textContent.normalize('NFKC').replace(/[‘’]/g,"'").replace(/\s+/g,' ').trim();
+      if(/^(?:This account (?:doesn't|does not) exist|Account not found|(?:この)?アカウント[はが]存在しません)[.!。]?$/i.test(text))return 'not-found';
+      if(/^(?:Account suspended|This account (?:is|has been) suspended|(?:この)?アカウント[はが]凍結されています|アカウント凍結)[.!。]?$/i.test(text))return 'suspended';
+    }
+    return '';
+  },
   read(document,pathname) {
     const url=this.profile(pathname);if(!url)return null;
     const handle=url.slice(14),area=document.querySelector('[data-testid="primaryColumn"]');if(!area)return null;

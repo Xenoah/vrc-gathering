@@ -48,3 +48,10 @@ test('backpressure and X pauses keep all remaining targets; account switching re
  const h=harness(1),send=h.deps.deliver;h.deps.deliver=async()=>({full:true});await h.q.start(account);await h.q.tick();assert.equal(scan(h).cursor,0);assert.equal(scan(h).phase,'handoff');
  await assert.rejects(h.q.start('usr_otherowner001'),/別アカウント/);h.deps.deliver=async()=>({paused:true,message:'login'});h.advance();await h.q.tick();assert.equal(scan(h).phase,'paused');h.deps.deliver=send;await h.q.resume();await h.q.tick();assert.equal(h.deliveries.length,1);await h.q.clear();assert.equal(scan(h).accountId,'');assert.equal(h.alarms.has(X_DISCOVERY_ALARM),false);
 });
+
+test('validated profile batches persist progress across workers and process the final short group',async()=>{
+ const h=harness(21),sizes=[];h.deps.lookupBatch=async(a,jobs)=>{sizes.push(jobs.length);return {ok:true,results:jobs.map(({userId})=>({userId,ok:true,profile:h.put(userId)}))};};
+ h.q=h.make();await h.q.start(account);await h.q.tick();assert.equal(scan(h).checked,10);assert.equal(scan(h).items.length,11);
+ h.q=h.make();h.advance();await h.q.tick();assert.equal(scan(h).checked,20);assert.equal(scan(h).items.length,1);
+ h.advance();await h.q.tick();assert.equal(scan(h).phase,'complete');assert.equal(h.deliveries.length,21);assert.deepEqual(sizes,[10,10,1]);assert.equal(h.calls.length,0);
+});

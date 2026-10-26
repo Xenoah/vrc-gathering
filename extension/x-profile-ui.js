@@ -12,7 +12,7 @@ export function createXProfileView({node,date,request,isOpen,getFollower=()=>nul
     holder.replaceChildren(links,status,button,followerButton,followerStatus);
     const current=()=>token===generation && isOpen() && holder.isConnected;
     let rendered=[];
-    refresh=()=>{if(!current())return;const q=getQueue();if(rendered.some(r=>activeFollowerJobs(q).some(j=>r.url===j.url)))followerStatus.textContent='別タブでフォロワー数を確認中…';else if(rendered.some(r=>q.items?.some(j=>j.url===r.url)))followerStatus.textContent=q.phase==='paused'?'取得は停止中です。一覧の「再開」で続けられます。':'フォロワー数の更新待ちです。';else if(autoQueued&&rendered.some(r=>getFollower(accountId,r.url)))followerStatus.textContent='取得日時を付けて保存しています。';for(const {url,count} of rendered){const metric=getFollower(accountId,url);count.textContent='フォロワー：'+followerText(metric)+(metric?' · 確認 '+date(metric.observedAt):'');}};
+    refresh=()=>{if(!current())return;const q=getQueue();if(rendered.some(r=>activeFollowerJobs(q).some(j=>r.url===j.url)))followerStatus.textContent='別タブでフォロワー数を確認中…';else if(rendered.some(r=>q.items?.some(j=>j.url===r.url)))followerStatus.textContent=q.phase==='paused'?'取得は停止中です。一覧の「再開」で続けられます。':'フォロワー数の更新待ちです。';else if(rendered.some(r=>q.errors?.some(e=>e.url===r.url)))followerStatus.textContent=q.errors.filter(e=>rendered.some(r=>r.url===e.url)).map(e=>e.message).join(' ');else if(autoQueued&&rendered.some(r=>getFollower(accountId,r.url)))followerStatus.textContent='取得日時を付けて保存しています。';for(const {url,count} of rendered){const metric=getFollower(accountId,url);count.textContent='フォロワー：'+followerText(metric)+(metric?' · 確認 '+date(metric.observedAt):'');}};
     function display(entry) {
       if(!entry)return;
       links.replaceChildren();rendered=[];

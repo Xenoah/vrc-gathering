@@ -23,6 +23,12 @@ export function extractXProfiles(raw) {
   const bare=[...withoutURLs.matchAll(/(?:^|[\s（(「【:：])((?:(?:www|mobile|m)\.)?(?:x|twitter)\.com\/[^\s<>"'()（）「」【】]+)/gi)].map(m=>m[1]);
   return [...new Set([...links,...absolute,...bare].map(value=>xProfileURL(typeof value==='string'?value.replace(/[.,、。!！]+$/u,''):value)).filter(Boolean))].slice(0,5);
 }
+// Limited friend/user responses may omit profile fields. Only a complete pair
+// proves that a missing URL was removed; omission must not erase a saved link.
+export function xProfileObservation(raw,accountId,observedAt=Date.now()) {
+  if(!raw||typeof raw.bio!=='string'||!Array.isArray(raw.bioLinks)||typeof raw.id!=='string'||!/^(usr_[a-zA-Z0-9-]{8,64}|[a-zA-Z0-9]{8,32})$/.test(raw.id))return null;
+  return {accountId,userId:raw.id,urls:extractXProfiles(raw),observedAt};
+}
 export const xCacheKey = (accountId,userId) => accountId+'/'+userId;
 export function readXCache(cache,accountId,userId,now=Date.now()) {
   const entry=cache?.[xCacheKey(accountId,userId)];

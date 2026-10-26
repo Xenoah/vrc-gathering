@@ -4,7 +4,7 @@ import { createImageCollector, imageCandidate, IMAGE_ORIGINS, IMAGE_CACHE_BYTES,
 import { createSync, syncSettings, createAccountUpdater, CLOUD_ORIGINS, serverRetryDeadline } from './sync.js';
 import { resolveSettingsBackup } from './settings-backup.js';
 import { reconcileConnections } from './connections.js';
-import { extractXProfiles, readXCache, writeXCache, X_CACHE_TTL, xProfileURL } from './x-profile.js';
+import { extractXProfiles, readXCache, writeXCache, X_CACHE_TTL, xProfileURL, xProfileObservation } from './x-profile.js';
 import { normalizeRecord, mergeRecord, logInstanceId } from './sync-format.js';
 import { createFollowerCollector, followerTargets, X_QUEUE_ALARM } from './x-follower-collector.js';
 import { X_FOLLOWER_ORIGINS, followerRecords, mergeFollowerCache } from './x-followers.js';
@@ -100,7 +100,7 @@ const friendDiscovery=createFriendDiscovery({storage:chrome.storage.local,alarms
     return activeProfile;
   },
   profiles:async()=>(await chrome.storage.local.get('xProfileCache')).xProfileCache||{},
-  lookup:(accountId,userId,signal)=>lookupXProfile({accountId,userId},{requireFriend:true,signal}),
+  lookupBatch:lookupFriendXProfiles,
   targets:async(accountId,ids)=>{const saved=await chrome.storage.local.get(['xProfileCache','xFollowerCache']);return followerTargets(saved.xProfileCache,saved.xFollowerCache,accountId,ids);},
   deliver:(targets,batchId)=>followerQueue.enqueue(targets,{batchId})});
 async function collectFollowers({accountId,userId,force=false}){
@@ -211,7 +211,7 @@ async function readOwnInstance(signal,accountId,{quiet=false}={}){
   signal.throwIfAborted();return {before,after,snapshot,worlds};
 }
 async function pages(offline, offset, maximum, signal, me) {
-  const observations = [], images = [];
+  const observations = [], images = [], profiles = [];
   let complete = false;
   const active = new Set(me.activeFriends || []), online = new Set(me.onlineFriends || []);
   for (let p = 0; p < maximum; p++) {
@@ -224,16 +224,17 @@ async function pages(offline, offset, maximum, signal, me) {
       const f = friend(item, observedAt, fallback);
       if (!f) throw new ApiError('不正なフレンドIDを受信しました。保存を中止しました。', 403);
       observations.push(f);images.push(imageCandidate(item,'user'));
+      const profile=xProfileObservation(item,me.id,observedAt);if(profile)profiles.push(normalizeRecord('profiles',profile));
     }
     offset += raw.length;
     if (raw.length < 100) { complete = true; offset = 0; break; }
   }
-  return { observations, images, complete, nextOffset: offset };
+  return { observations, images, profiles, complete, nextOffset: offset };
 }
 async function collectUserNotes(signal,accountId,meta) {
   const prior=meta.noteScan||{},at=Date.now();
-  if(!prior.offset&&!prior.pending?.length&&at-(prior.completedAt||0)<NOTE_SCAN_INTERVAL)return {samples:[],scan:prior};
-  const scan={...prior,seen:[...(prior.seen||[])],pending:[...(prior.pending||[])],attemptedAt:at,error:''},samples=[];
+  if(!prior.offset&&!prior.pending?.length&&at-(prior.completedAt||0)<NOTE_SCAN_INTERVAL)return {samples:[],profiles:[],scan:prior};
+  const scan={...prior,seen:[...(prior.seen||[])],pending:[...(prior.pending||[])],attemptedAt:at,error:''},samples=[],profiles=[];
   try{
     if(prior.offset||at-(prior.completedAt||0)>=NOTE_SCAN_INTERVAL){
       let offset=prior.offset||0;if(!offset)scan.seen=[];
@@ -251,9 +252,9 @@ async function collectUserNotes(signal,accountId,meta) {
       scan.offset=offset;
     }
     // Missing from a mutable paginated list is not proof of deletion. Confirm individually.
-    if(scan.pending.length){const userId=scan.pending[0];try{const raw=await request('/users/'+userId,signal,'公式ノートの変更を確認中');samples.push(officialNote(raw,accountId,Date.now(),{targetId:userId}));}catch(error){if(signal.aborted||[401,403,429].includes(error.status))throw error;scan.error=error.message;}scan.pending.shift();}
-    return {samples,scan};
-  }catch(error){if(signal.aborted||[401,403,429].includes(error.status))throw error;return {samples:[],scan:{...prior,attemptedAt:at,error:error.message}};}
+    if(scan.pending.length){const userId=scan.pending[0];try{const raw=await request('/users/'+userId,signal,'公式ノートの変更を確認中');samples.push(officialNote(raw,accountId,Date.now(),{targetId:userId}));const profile=xProfileObservation(raw,accountId);if(profile)profiles.push(normalizeRecord('profiles',profile));}catch(error){if(signal.aborted||[401,403,429].includes(error.status))throw error;scan.error=error.message;}scan.pending.shift();}
+    return {samples,profiles,scan};
+  }catch(error){if(signal.aborted||[401,403,429].includes(error.status))throw error;return {samples:[],profiles:[],scan:{...prior,attemptedAt:at,error:error.message}};}
 }
 async function collect(signal) {
   const config = await configuration(), before = await state();
@@ -272,12 +273,12 @@ async function collect(signal) {
     const allMeta = (await chrome.storage.local.get('accountMeta')).accountMeta || {};
     const meta = allMeta[accountId] || {};
     const onlinePage = await pages(false, meta.onlineOffset || 0, 20, signal, me);
-    const images=[...onlinePage.images];
+    const images=[...onlinePage.images],profiles=[...onlinePage.profiles];
     const observations = [...rosterObservations(me, previous, observedAt), ...onlinePage.observations];
     const nextMeta = { ...meta, displayName: me.displayName, onlineOffset: onlinePage.nextOffset };
     if (meta.offlineOffset || !meta.offlineCompletedAt || startedAt - meta.offlineCompletedAt > config.offlineRefreshMinutes * 60000) {
       const offlinePage = await pages(true, meta.offlineOffset || 0, 5, signal, me);
-      observations.push(...offlinePage.observations);images.push(...offlinePage.images);
+      observations.push(...offlinePage.observations);images.push(...offlinePage.images);profiles.push(...offlinePage.profiles);
       nextMeta.offlineOffset = offlinePage.nextOffset;
       if (offlinePage.complete) nextMeta.offlineCompletedAt = Date.now();
     }
@@ -292,7 +293,7 @@ async function collect(signal) {
         worlds.push({ accountId, id, name: '', authorName: '', capacity: null, observedAt: Date.now(), retryAt: Date.now() + 86400000 });
       }
     }
-    const notes=await collectUserNotes(signal,accountId,meta);nextMeta.noteScan=notes.scan;
+    const notes=await collectUserNotes(signal,accountId,meta);nextMeta.noteScan=notes.scan;profiles.push(...notes.profiles);
     const own=await readOwnInstance(signal,accountId),instanceSnapshot=own.snapshot,finalMe=own.after;
     worlds.push(...own.worlds);
     signal.throwIfAborted();
@@ -308,6 +309,7 @@ async function collect(signal) {
     const compactRun=compressRun(await list('runs',accountId),run,collectorId,config.pollSeconds);
     const instanceRecords=reconcileInstancePresence(await activeSeries(accountId),instanceSnapshot,{accountId,collectorId,pollSeconds:config.pollSeconds});
     await commit(changes.records, changes.events, worlds, compactRun, connections,[...research,...noteChanges(await researchKind('userNotes',accountId),notes.samples),...instanceRecords]);
+    const linkRecords=profiles.filter(r=>!roster||roster.has(r.value.userId));if(linkRecords.length)await mergeProfiles(linkRecords);
     await chrome.storage.local.set({instanceCollectionState:instanceViewState(finalMe,instanceSnapshot,[...worlds,...cached.values()].find(w=>w.id===finalMe.self.location.worldId)?.name||'')});
     if((await chrome.storage.local.get('imageCacheSettings')).imageCacheSettings?.enabled)await enqueueImages(accountId,images.filter(v=>v&&(v.kind==='world'||!roster||roster.has(v.id))),completedAt);
     nextMeta.lastSuccessAt = completedAt;
@@ -390,6 +392,41 @@ async function collectOwnInstance({accountId=''}) {
   }).finally(()=>{activeProfile=null;profileController=null;});
   return activeProfile;
 }
+async function lookupFriendXProfiles(accountId,jobs,signal) {
+  if(!USER_ID.test(accountId)||!Array.isArray(jobs)||jobs.length>10||jobs.some(j=>!USER_ID.test(j.userId)))throw Error('プロフィールの取得対象が不正です。');
+  if(profileResetting)return {ok:false,status:403,error:'記録を削除中です。'};
+  if(activeProfile||activeRun)return {ok:true,busy:true};
+  const abort=new AbortController(),cancel=()=>abort.abort();signal.addEventListener('abort',cancel,{once:true});if(signal.aborted)cancel();profileController=abort;
+  activeProfile=(async()=>{
+    const config=await configuration();if(!validContact(config.contact))throw new ApiError('収集設定で連絡先を保存してください。',403);
+    await imageCollector.idle();abort.signal.throwIfAborted();await ensureUA(config);
+    const before=await identity(abort.signal,'Xリンク確認のアカウント確認',{quiet:true});
+    if(before.id!==accountId||!Array.isArray(before.friends))throw new ApiError('表示アカウントとVRChatのログイン・フレンド名簿を確認してください。',403);
+    const cache=(await chrome.storage.local.get('xProfileCache')).xProfileCache||{},results=[],records=[];
+    for(const {userId} of jobs){
+      abort.signal.throwIfAborted();
+      if(!before.friends.includes(userId)){results.push({userId,ok:true,skipped:true});continue;}
+      const cached=readXCache(cache,accountId,userId);
+      if(cached&&Date.now()-cached.checkedAt<X_CACHE_TTL){results.push({userId,ok:true,profile:cached});continue;}
+      try{
+        const raw=await request('/profile/'+userId,abort.signal,'フレンドの公開Xリンクを取得中',{quiet:true});
+        if(raw?.id!==userId||!Array.isArray(raw.bioLinks)&&typeof raw.bio!=='string')throw Error('公開プロフィールのリンク情報を確認できませんでした。');
+        const profile={accountId,userId,urls:extractXProfiles(raw),checkedAt:Date.now()};
+        records.push(normalizeRecord('profiles',{...profile,observedAt:profile.checkedAt}));results.push({userId,ok:true,profile});
+      }catch(error){if(abort.signal.aborted||[401,403,429].includes(error.status))throw error;results.push({userId,ok:false,error:error.message});}
+    }
+    const after=await identity(abort.signal,'Xリンク確認のアカウント再確認',{quiet:true});
+    if(after.id!==accountId||!Array.isArray(after.friends))throw new ApiError('取得中にアカウントまたは名簿を確認できなくなったため、この組のプロフィールを保存しませんでした。',403);
+    abort.signal.throwIfAborted();
+    const current=new Set(after.friends),valid=records.filter(r=>current.has(r.value.userId));
+    if(valid.length){await mergeProfiles(valid);void syncQuietly();}
+    return {ok:true,results:results.map(r=>current.has(r.userId)?r:{userId:r.userId,ok:true,skipped:true})};
+  })().catch(async error=>{
+    if(error.status===429||error.retryAfter!=null){const s=await state();await patchState({cooldownUntil:Math.max(s.cooldownUntil||0,Date.now()+retryDelay(error.retryAfter,Date.now(),1))});}
+    return {ok:false,status:error.status||0,error:abort.signal.aborted?'プロフィールの取得を中止しました。':error.message};
+  }).finally(()=>{signal.removeEventListener('abort',cancel);activeProfile=null;profileController=null;});
+  return activeProfile;
+}
 async function lookupXProfile({accountId,userId,force=false},{requireFriend=false,signal}={}) {
   if(typeof accountId!=='string'||typeof userId!=='string'||!USER_ID.test(accountId)||!USER_ID.test(userId))throw Error('ユーザーIDが不正です。');
   const cache=(await chrome.storage.local.get('xProfileCache')).xProfileCache||{},profile=readXCache(cache,accountId,userId);
@@ -444,6 +481,7 @@ async function lookupUserNote({accountId,userId,force=false,readOnly=false}) {
     const raw=await request('/users/'+userId,abort.signal,'公式ユーザーノートを取得中',{quiet:true}),sample=officialNote(raw,accountId,Date.now(),{targetId:userId});
     const after=await identity(abort.signal,'公式ノートのアカウント再確認',{quiet:true});if(after.id!==accountId)throw Error('取得中にアカウントが切り替わったため、ノートを保存しませんでした。');
     abort.signal.throwIfAborted();const changes=noteChanges(await researchKind('userNotes',accountId),[sample]);await mergeSyncRecords(changes);
+    const profile=xProfileObservation(raw,accountId,sample.observedAt);if(profile)await mergeProfiles([normalizeRecord('profiles',profile)]);
     const cache=(await chrome.storage.local.get('userNoteChecks')).userNoteChecks||{};await chrome.storage.local.set({userNoteChecks:noteChecks(cache,accountId,userId,sample.observedAt)});void syncQuietly();
     return {ok:true,record:(await researchKind('userNotes',accountId)).find(r=>r.value.userId===userId)?.value||null,history:(await researchKind('userNoteHistory',accountId)).filter(r=>r.value.userId===userId).map(r=>r.value).sort((a,b)=>b.changedAt-a.changedAt),checkedAt:sample.observedAt};
   })().catch(async error=>{
@@ -628,6 +666,10 @@ async function command(message) {
 }
 let commandQueue = Promise.resolve();
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if(message.type==='X_FOLLOWERS_UNAVAILABLE'){
+    if(sender.id!==chrome.runtime.id||sender.frameId!==0||!Number.isInteger(sender.tab?.id)||!['not-found','suspended'].includes(message.reason)||!message.url||xProfileURL(sender.url)!==message.url||!sender.url?.startsWith('https://x.com/'))return false;
+    followerQueue.unavailable(sender.tab.id,message.url,message.reason).then(respond,()=>respond({ok:false}));return true;
+  }
   if(message.type==='X_FOLLOWERS_BLOCKED'){
     if(sender.id!==chrome.runtime.id||sender.frameId!==0||!Number.isInteger(sender.tab?.id)||!sender.url?.startsWith('https://x.com/')||!['login','rate-limit'].includes(message.reason))return false;
     followerQueue.blocked(sender.tab.id,message.reason).then(async blocked=>{if(blocked)await friendDiscovery.pause('Xのログイン・利用制限を確認してから再開してください。');respond({ok:true});},()=>respond({ok:false}));return true;

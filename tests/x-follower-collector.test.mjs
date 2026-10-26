@@ -199,3 +199,12 @@ test('a full X queue declines a discovery chunk without marking it delivered or 
  const h=harness();await h.collector.enqueue(jobs('initial'));const pending=Array.from({length:10000},(_,i)=>({url:url('fixture'+i),observedAt:0}));h.values.xFollowerQueue.items=pending;
  const result=await h.collector.enqueue(jobs('later'),{batchId:'scan:100'});assert.equal(result.full,true);assert.equal(h.values.xFollowerQueue.items.length,10000);assert.equal(h.values.xFollowerQueue.receipts.includes('scan:100'),false);
 });
+
+test('suspended and nonexistent profiles finish once without retrying or pausing unrelated jobs',async()=>{
+ for(const reason of ['suspended','not-found']){const h=harness();await h.collector.enqueue(jobs('a','b','c','d'));const first=active(h)[0];h.pages.get(first.tabId).active=true;
+  assert.equal((await h.collector.unavailable(first.tabId,url('b'),reason)).ok,false);h.advance(X_QUEUE_INTERVAL);
+  assert.equal((await h.collector.unavailable(first.tabId,first.url,reason)).ok,true);assert.equal((await h.collector.unavailable(first.tabId,first.url,reason)).ok,false);assert.equal(h.values.xFollowerQueue.unavailable,1);assert.equal(h.values.xFollowerQueue.skipped,1);assert.equal(h.values.xFollowerQueue.retries,0);assert.equal(h.values.xFollowerQueue.paused,false);assert.equal(h.creates,4);assert.ok(h.pages.has(first.tabId));assert.equal(active(h).length,3);
+  for(const job of [...active(h)])await h.collector.observed(job.url,job.tabId);
+  assert.equal(h.values.xFollowerQueue.phase,'complete');assert.equal(h.values.xFollowerQueue.success,3);assert.match(h.values.xFollowerQueue.message,/1件は凍結・不存在/);
+ }
+});
