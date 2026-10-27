@@ -1,10 +1,13 @@
-import {followerHistogram} from './x-follower-histogram.js';
+import {followerHistogram,histogramBinCount} from './x-follower-histogram.js';
 import {followerText} from './x-followers.js';
 import {csv} from './core.js';
 
 export function createFollowerHistogram({root,node,date,download}) {
   const $=id=>root.querySelector('[data-histogram="'+id+'"]'),NS='http://www.w3.org/2000/svg';
-  let input={},report={rows:[],bins:[]},selection=null,shown=100,account='',dirty=true;
+  let input={},report={rows:[],bins:[]},selection=null,shown=100,account='',dirty=true,binCount=null;
+  const preferenceKey='vrc-x-histogram-view';
+  try{const saved=JSON.parse(localStorage.getItem(preferenceKey));if(saved){binCount=histogramBinCount(saved.binCount);$('bins').value=binCount??'';if(['log','linear'].includes(saved.scale))$('scale').value=saved.scale;}}catch{}
+  const savePreferences=()=>{try{localStorage.setItem(preferenceKey,JSON.stringify({binCount,scale:$('scale').value}));}catch{}};
   const num=value=>value.toLocaleString('ja-JP',{maximumFractionDigits:1});
   function svg(tag,attrs={},text){const n=document.createElementNS(NS,tag);for(const [key,value] of Object.entries(attrs))n.setAttribute(key,value);if(text!=null)n.textContent=text;return n;}
   function select(bin){selection=bin;shown=100;renderList();for(const mark of $('plot').querySelectorAll('[role="button"]'))mark.setAttribute('aria-pressed',String(Number(mark.dataset.min)===bin.min));}
@@ -19,13 +22,15 @@ export function createFollowerHistogram({root,node,date,download}) {
   }
   function render(){
     if(!root.open)return;dirty=false;
-    const scale=$('scale').value,binCount=Number($('bins').value);$('binField').hidden=scale!=='linear';
+    const scale=$('scale').value;
     report=followerHistogram(input.metrics,input.profiles,{accountId:account,friends:input.friends,scope:$('scope').value,scale,binCount});
+    $('binStatus').textContent=`表示 ${report.bins.length}階級`+(binCount===null?'（自動）':`（指定 ${binCount}）`)+(report.total&&binCount>report.bins.length?' · 0〜最大値の整数範囲に合わせて階級数を減らしています。':'');
     $('summary').textContent=`取得済み ${num(report.total)}アカウント · 未取得のXリンク ${num(report.missing)}件 · 概数 ${num(report.approximate)}件`+(report.total?` · 中央値 ${num(report.median)}人 · 最大 ${num(report.max)}人`:'');
     $('dates').textContent=report.total?'保存済みの最新値で集計 · 確認日時 '+date(report.oldest)+'〜'+date(report.newest)+'（JST） · 未取得は除外、0人は含む。':'Xフォロワー数を取得すると表示します。';
     $('csv').disabled=!report.total;$('plot').replaceChildren();$('table').replaceChildren();
     if(!report.total){$('plot').append(node('p','この対象には取得済みのフォロワー数がありません。','chart-empty'));selection=null;renderList();return;}
-    const plot=svg('svg',{viewBox:'0 0 760 286',class:'x-histogram-plot','aria-label':'Xフォロワー数の分布'}),left=62,right=742,top=26,bottom=220;
+    const plotWidth=Math.max(760,80+report.bins.length*16),plot=svg('svg',{viewBox:`0 0 ${plotWidth} 286`,class:'x-histogram-plot','aria-label':'Xフォロワー数の分布'}),left=62,right=plotWidth-18,top=26,bottom=220;
+    plot.style.minWidth=Math.max(600,plotWidth>760?plotWidth:600)+'px';
     const peak=Math.max(...report.bins.map(b=>b.count)),tick=Math.max(1,Math.ceil(peak/4)),yMax=tick*Math.ceil(peak/tick),step=(right-left)/report.bins.length;
     plot.append(svg('text',{x:left,y:15,class:'chart-tick'},'Xアカウント数'));
     for(let i=0;i<=yMax/tick;i++){const value=i*tick,y=bottom-(value/yMax)*(bottom-top);plot.append(svg('line',{x1:left,y1:y,x2:right,y2:y,class:'chart-grid'}),svg('text',{x:left-10,y:y+4,'text-anchor':'end',class:'chart-tick'},num(value)));}
@@ -38,11 +43,18 @@ export function createFollowerHistogram({root,node,date,download}) {
       if(i%labelStep===0||i===report.bins.length-1){const label=bin.min.toLocaleString('ja-JP',{notation:'compact',maximumFractionDigits:1});plot.append(svg('text',{x:x+step/2,y:243,'text-anchor':'middle',class:'chart-tick'},label));}
       const tr=node('tr'),td=node('td'),button=node('button',bin.label+'人');button.type='button';button.onclick=()=>select(bin);td.append(button);tr.append(td,node('td',num(bin.count)),node('td',num(bin.count/report.total*100)+'%'));$('table').append(tr);
     }
-    plot.append(svg('text',{x:(left+right)/2,y:274,'text-anchor':'middle',class:'chart-tick'},scale==='log'?'フォロワー数（桁別・0人は独立した区間）':'フォロワー数（等間隔・目盛りは区間の下限）'));
+    plot.append(svg('text',{x:(left+right)/2,y:274,'text-anchor':'middle',class:'chart-tick'},scale==='log'&&binCount===null?'フォロワー数（桁別・0人は独立した区間）':`フォロワー数（${scale==='log'?'対数間隔':'等間隔'}・目盛りは階級の下限）`));
     $('plot').append(plot);$('readout').textContent='棒にカーソルを合わせるか、Tabキーで値を確認できます。クリック／Enterで該当アカウントを表示。';
     if(selection){selection=report.bins.find(b=>b.min===selection.min&&b.max===selection.max)||null;for(const mark of $('plot').querySelectorAll('[role="button"]'))mark.setAttribute('aria-pressed',String(!!selection&&Number(mark.dataset.min)===selection.min));}renderList();
   }
-  for(const id of ['scope','scale','bins'])$(id).addEventListener('change',()=>{selection=null;render();});
+  for(const id of ['scope','scale'])$(id).addEventListener('change',()=>{selection=null;savePreferences();dirty=true;render();});
+  $('bins').addEventListener('input',()=>{
+    const field=$('bins'),value=field.value===''?null:histogramBinCount(Number(field.value));
+    const invalid=!field.validity.valid || field.value!==''&&value===null;
+    field.setAttribute('aria-invalid',String(invalid));$('binError').hidden=!invalid;
+    if(invalid)return;
+    binCount=value;selection=null;savePreferences();dirty=true;render();
+  });
   $('more').onclick=()=>{shown+=100;renderList();};
   $('csv').onclick=()=>download('x-follower-histogram.csv',csv([['フォロワー数下限','フォロワー数上限','Xアカウント数','概数を含む件数'],...report.bins.map(b=>[b.min,b.max,b.count,b.approximate])]),'text/csv;charset=utf-8');
   root.addEventListener('toggle',()=>{if(root.open&&dirty)render();});

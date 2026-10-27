@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {followerHistogram} from '../extension/x-follower-histogram.js';
+import {followerHistogram,histogramBinCount} from '../extension/x-follower-histogram.js';
 const accountId='usr_histowner001',other='usr_histowner002',now=Date.now();
 const metric=(name,followers,extra={})=>({accountId,url:'https://x.com/'+name,followers,approximate:false,source:'x-profile',observedAt:now-1000,...extra});
 const profile=(userId,urls,owner=accountId)=>({accountId:owner,userId,urls:urls.map(n=>'https://x.com/'+n),checkedAt:now-1000});
@@ -37,4 +37,36 @@ test('both scales cover the largest valid count without unbounded bin creation o
 });
 test('large samples are fully aggregated rather than inheriting the display pagination limit',()=>{
  const r=build(Array.from({length:3000},(_,i)=>metric('bulk'+i,i)));assert.equal(r.total,3000);assert.equal(r.bins.reduce((n,b)=>n+b.count,0),3000);assert.equal(r.median,1499.5);
+});
+
+test('arbitrary class counts work on both scales without gaps, overlaps, or lost observations',()=>{
+ const rows=Array.from({length:1001},(_,i)=>metric('bin'+i,i,{approximate:i%5===0}));
+ for(const scale of ['log','linear'])for(const binCount of [1,7,37,100]){
+  const r=build(rows,{},{scale,binCount});assert.equal(r.requestedBinCount,binCount);assert.equal(r.bins.length,binCount);
+  assert.equal(r.bins[0].min,0);assert.equal(r.bins.at(-1).max,1000);
+  assert.equal(r.bins.reduce((n,b)=>n+b.count,0),rows.length);assert.equal(r.bins.reduce((n,b)=>n+b.approximate,0),201);
+  for(const [i,b] of r.bins.entries()){assert.ok(Number.isSafeInteger(b.min)&&Number.isSafeInteger(b.max)&&b.max>=b.min);if(i)assert.equal(b.min,r.bins[i-1].max+1);}
+  for(const row of rows)assert.equal(r.bins.filter(b=>row.followers>=b.min&&row.followers<=b.max).length,1);
+ }
+});
+test('narrow integer ranges reduce the class count and empty samples stay empty',()=>{
+ for(const scale of ['log','linear'])for(const max of [0,1,3]){
+  const r=build([metric('max',max)],{},{scale,binCount:100});assert.equal(r.requestedBinCount,100);assert.equal(r.bins.length,max+1);assert.equal(r.bins.at(-1).count,1);
+  assert.deepEqual(r.bins.map(b=>[b.min,b.max]),Array.from({length:max+1},(_,i)=>[i,i]));
+ }
+ assert.deepEqual(build([],{},{binCount:100}).bins,[]);
+});
+test('custom classes cover maximum-safe-integer boundaries on both scales',()=>{
+ for(const scale of ['log','linear']){
+  const model=build([metric('max',Number.MAX_SAFE_INTEGER)],{},{scale,binCount:100});assert.equal(model.bins.length,100);
+  const rows=model.bins.flatMap((b,i)=>[metric('lower'+i,b.min),metric('upper'+i,b.max)]),r=build(rows,{},{scale,binCount:100});
+  assert.ok(r.bins.every(b=>b.count===2&&Number.isSafeInteger(b.min)&&Number.isSafeInteger(b.max)));assert.equal(r.total,200);
+ }
+});
+test('invalid or absent class counts use automatic binning without unbounded work',()=>{
+ for(const value of [null,undefined,0,-1,101,1.5,Infinity,NaN,'7']){
+  assert.equal(histogramBinCount(value),null);
+  const r=build([metric('max',10000)],{},{binCount:value});assert.equal(r.requestedBinCount,null);assert.deepEqual(r.bins.map(b=>b.min),[0,1,10,100,1000,10000]);
+ }
+ assert.equal(histogramBinCount(7),7);
 });
