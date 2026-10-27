@@ -588,6 +588,41 @@ test('ten uncached friends use twelve batch calls plus one roster call, while pr
   for(let i=1;i<h.calls.length;i++)assert.ok(h.calls[i].at-h.calls[i-1].at>=2200);
  }finally{h.stop();}
 });
+test('cached X tabs finish while a profile request is pending, and each checked batch streams before the full roster finishes',async()=>{
+ const ids=Array.from({length:21},(_,i)=>'usr_stream'+String(i).padStart(6,'0'));
+ let entered,release;const began=new Promise(r=>entered=r),blocked=new Promise(r=>release=r);
+ const h=await harness(async url=>{
+  if(url.pathname.endsWith('/auth/user'))return {body:{...owner,friends:ids}};
+  if(url.pathname.includes('/profile/')){const id=url.pathname.split('/').at(-1);if(id===ids[1]){entered();await blocked;}return {body:{id,bio:'',bioLinks:['https://x.com/f'+id.slice(-6)]}};}
+  return good(url);
+ });
+ try{
+  h.store.xProfileCache={[uid+'/'+ids[0]]:{accountId:uid,userId:ids[0],checkedAt:Date.UTC(2026,9,24),urls:['https://x.com/cached_fixture']}};
+  await h.command({type:'SAVE',settings:{contact:'https://github.com/example'}});await h.command({type:'SAVE_X_FOLLOWERS',enabled:true,bulkScope:'friends',concurrency:3});await h.command({type:'COLLECT_X_FOLLOWERS',accountId:uid});await began;
+  assert.equal(h.store.xFriendScan.checked,1);assert.equal(h.store.xFriendScan.items.length,20);assert.equal(h.store.xFollowerQueue.active.length,1);
+  const job=h.store.xFollowerQueue.active[0],sender={id:'testextension',url:h.tabRows.get(job.tabId).url,frameId:0,tab:{id:job.tabId}};
+  const saved=await new Promise(resolve=>h.events.message({type:'X_FOLLOWERS_OBSERVED',url:job.url,followers:42,approximate:false},sender,resolve));
+  assert.equal(saved.ok,true);assert.equal(h.store.xFollowerQueue.success,1);assert.equal(h.store.xFriendScan.checked,1);assert.ok(h.saved.research.some(r=>r.kind==='followerHistory'&&r.value.followers===42));
+  release();await h.flush();assert.equal(h.store.xFriendScan.checked,11);assert.equal(h.store.xFriendScan.items.length,10);assert.equal(h.store.xFriendScan.cursor,11);assert.equal(h.store.xFollowerQueue.total,11);assert.equal(h.store.xFollowerQueue.active.length,3);
+  h.advance(2000);h.events.alarm({name:'vrc-x-friend-discovery'});await h.flush();assert.equal(h.store.xFriendScan.phase,'complete');assert.equal(h.store.xFollowerQueue.total,21);assert.ok(h.store.xFollowerQueue.active.length<=3);
+ }finally{release();h.stop();}
+});
+test('a profile auth/rate failure pauses X tabs already started from cached links and retains both queues',async()=>{
+ for(const status of [401,403,429]){
+  const missing='usr_missingstream01';let sawRunning=false;
+  const h=await harness(url=>{
+   if(url.pathname.endsWith('/auth/user'))return {body:{...owner,friends:[fid,missing]}};
+   if(url.pathname.includes('/profile/')){sawRunning=h.store.xFollowerQueue.active.length===1;return {status,headers:{'Retry-After':'3600'}};}
+   return good(url);
+  });
+  try{
+   h.store.xProfileCache={[uid+'/'+fid]:{accountId:uid,userId:fid,checkedAt:Date.UTC(2026,9,24),urls:['https://x.com/cached_fixture']}};
+   await h.command({type:'SAVE',settings:{contact:'https://github.com/example'}});await h.command({type:'SAVE_X_FOLLOWERS',enabled:true,bulkScope:'friends'});await h.command({type:'COLLECT_X_FOLLOWERS',accountId:uid});await h.flush();
+   assert.equal(sawRunning,true);assert.equal(h.store.xFriendScan.phase,'paused');assert.equal(h.store.xFriendScan.items.length,1);assert.equal(h.store.xFollowerQueue.paused,true);assert.equal(h.store.xFollowerQueue.items.length,1);assert.equal(h.tabRows.size,0);assert.equal(Object.keys(h.store.xProfileCache).length,1);
+   if(status===429)assert.ok(h.store.state.cooldownUntil>h.store.state.lastRequestAt);
+  }finally{h.stop();}
+ }
+});
 test('batch account switches and mid-batch limits discard every staged link while retaining pending work',async()=>{
  for(const mode of ['switch','limit','missing']){const ids=[fid,'usr_fixturefriend02'];let fetched=0;
   const h=await harness(url=>{

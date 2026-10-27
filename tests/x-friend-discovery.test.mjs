@@ -51,7 +51,39 @@ test('backpressure and X pauses keep all remaining targets; account switching re
 
 test('validated profile batches persist progress across workers and process the final short group',async()=>{
  const h=harness(21),sizes=[];h.deps.lookupBatch=async(a,jobs)=>{sizes.push(jobs.length);return {ok:true,results:jobs.map(({userId})=>({userId,ok:true,profile:h.put(userId)}))};};
- h.q=h.make();await h.q.start(account);await h.q.tick();assert.equal(scan(h).checked,10);assert.equal(scan(h).items.length,11);
- h.q=h.make();h.advance();await h.q.tick();assert.equal(scan(h).checked,20);assert.equal(scan(h).items.length,1);
+ h.q=h.make();await h.q.start(account);await h.q.tick();assert.equal(scan(h).checked,10);assert.equal(scan(h).items.length,11);assert.equal(h.deliveries.length,10);assert.equal(scan(h).cursor,10);
+ h.q=h.make();h.advance();await h.q.tick();assert.equal(scan(h).checked,20);assert.equal(scan(h).items.length,1);assert.equal(h.deliveries.length,20);
  h.advance();await h.q.tick();assert.equal(scan(h).phase,'complete');assert.equal(h.deliveries.length,21);assert.deepEqual(sizes,[10,10,1]);assert.equal(h.calls.length,0);
+});
+
+test('cached links run during pending profile requests and later batches deduplicate already delivered URLs',async()=>{
+ const h=harness(21),first=h.put(id(0));let entered,release;const began=new Promise(r=>entered=r),blocked=new Promise(r=>release=r);
+ h.deps.lookupBatch=async(a,jobs)=>{entered();await blocked;return {ok:true,results:jobs.map(({userId})=>({userId,ok:true,profile:h.put(userId,userId===id(1)?{urls:first.urls}:{})}))};};
+ h.q=h.make();await h.q.start(account);const work=h.q.tick();await began;
+ assert.equal(h.deliveries.length,1);assert.equal(scan(h).cursor,1);assert.equal(scan(h).checked,1);assert.equal(scan(h).items.length,20);
+ release();await work;assert.equal(scan(h).checked,11);assert.equal(scan(h).items.length,10);assert.equal(h.deliveries.length,10);
+ h.advance();await h.q.tick();assert.equal(scan(h).phase,'complete');assert.equal(h.deliveries.length,20);assert.equal(new Set(h.deliveries.map(t=>t.url)).size,20);
+});
+
+test('an interrupted streamed handoff is replayed unchanged before appending the next batch',async()=>{
+ const h=harness(21),send=h.deps.deliver,parts=[];let entered,release;const began=new Promise(r=>entered=r),blocked=new Promise(r=>release=r);
+ h.deps.deliver=async(rows,key)=>{parts.push({key,urls:rows.map(t=>t.url)});await send(rows,key);if(parts.length===1){entered();await blocked;}return {ok:true};};
+ await h.q.start(account);const work=h.q.tick();await began;const stopping=h.q.pause();release();await stopping;await work;
+ assert.equal(scan(h).cursor,0);assert.equal(scan(h).targets.length,10);assert.equal(scan(h).items.length,11);
+ h.q=h.make();await h.q.resume();await h.q.tick();assert.deepEqual(parts[0],parts[1]);assert.equal(scan(h).checked,20);assert.equal(h.deliveries.length,20);
+ h.advance();await h.q.tick();assert.equal(scan(h).phase,'complete');assert.equal(h.deliveries.length,21);assert.equal(new Set(h.deliveries.map(t=>t.url)).size,21);
+});
+
+test('streaming backpressure and a queue paused during delivery retain pending profile work',async()=>{
+ const h=harness(21),send=h.deps.deliver;h.put(id(0));h.deps.deliver=async()=>({full:true});
+ await h.q.start(account);await h.q.tick();assert.equal(scan(h).checked,1);assert.equal(scan(h).items.length,20);assert.equal(h.calls.length,0);
+ h.advance();h.deps.deliver=async()=>({ok:true,queue:{paused:true,message:'X login required'}});await h.q.tick();assert.equal(scan(h).phase,'paused');assert.equal(scan(h).cursor,0);assert.equal(h.calls.length,0);
+ h.deps.deliver=send;await h.q.resume();await h.q.tick();assert.equal(scan(h).checked,11);assert.equal(scan(h).cursor,11);
+});
+
+test('an older all-at-once handoff resumes its pending suffix without duplicate additions',async()=>{
+ const h=harness(3);h.ids.forEach(u=>h.put(u));await h.q.start(account);
+ const targets=await h.deps.targets(account,h.ids);await h.deps.deliver(targets.slice(0,1),scan(h).id+':0');
+ Object.assign(scan(h),{initialized:true,phase:'handoff',total:3,checked:3,withLinks:3,eligible:h.ids,items:[],targets,cursor:1});
+ h.q=h.make();await h.q.tick();assert.equal(scan(h).phase,'complete');assert.equal(scan(h).cursor,3);assert.equal(h.deliveries.length,3);assert.equal(h.calls.length,0);
 });

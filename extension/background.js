@@ -103,7 +103,7 @@ const friendDiscovery=createFriendDiscovery({storage:chrome.storage.local,alarms
   profiles:async()=>(await chrome.storage.local.get('xProfileCache')).xProfileCache||{},
   lookupBatch:lookupFriendXProfiles,
   targets:async(accountId,ids)=>{const saved=await chrome.storage.local.get(['xProfileCache','xFollowerCache']);return followerTargets(saved.xProfileCache,saved.xFollowerCache,accountId,ids);},
-  deliver:(targets,batchId)=>followerQueue.enqueue(targets,{batchId})});
+  deliver:(targets,batchId)=>followerQueue.enqueue(targets,{batchId}),pauseDelivery:()=>followerQueue.pause()});
 async function collectFollowers({accountId,userId,force=false}){
   if(!USER_ID.test(accountId||'')||userId&&!USER_ID.test(userId))throw Error('対象ユーザーが不正です。');
   const config=(await chrome.storage.local.get('xFollowerSettings')).xFollowerSettings||{};

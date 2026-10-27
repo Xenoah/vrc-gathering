@@ -47,8 +47,21 @@ async def main():
   assert await page.evaluate('fixture.values.xFriendScan.items.length')==4
   await page.evaluate('fixture.hold=false');await page.locator('#friendsPanel [data-x-resume]').click()
   await page.wait_for_function("fixture.values.xFriendScan.phase==='waiting' && fixture.values.xFriendScan.checked===3")
+  # X work is already running while the final profile still awaits its retry.
+  assert await page.evaluate('fixture.values.xFollowerQueue.active.length')==2
+  await expect(page.locator('#friendsPanel [data-x-discovery]')).to_contain_text('Xキュー送信済み 2件')
+  await expect(page.locator('#friendsPanel [data-x-queue]')).to_contain_text('同時取得 2/4件')
+  await page.evaluate('''async()=>{
+    for(const job of [...fixture.values.xFollowerQueue.active]){
+      const result=await new Promise(resolve=>fixture.message({type:'X_FOLLOWERS_OBSERVED',url:job.url,followers:123,approximate:false},
+        {id:'testextension',frameId:0,tab:{id:job.tabId},url:job.url+'#vrc-gathering='+job.token},resolve));
+      if(!result.ok)throw Error('Follower result was not saved during profile discovery');
+    }
+  }''')
+  assert await page.evaluate('fixture.values.xFriendScan.checked')==3
+  await expect(page.locator('#friendsPanel [data-x-queue]')).to_contain_text('確認済みリンクの処理完了。残りのプロフィールを確認中')
   await page.evaluate("()=>{fixture.offset+=2000;fixture.alarm({name:'vrc-x-friend-discovery'});}")
-  await page.wait_for_function("fixture.values.xFriendScan.phase==='complete' && fixture.values.xFollowerQueue.active.length===2")
+  await page.wait_for_function("fixture.values.xFriendScan.phase==='complete' && fixture.values.xFollowerQueue.success===2")
   await expect(page.locator('#friendsPanel [data-x-discovery]')).to_contain_text('4/4人')
   await expect(page.locator('#friendsPanel [data-x-discovery]')).to_contain_text('リンクあり 2人 / なし 1人 / 未確認 1人')
   await expect(page.locator('#friendsPanel [data-x-discovery-errors]')).to_be_visible()
@@ -56,8 +69,12 @@ async def main():
   assert await page.evaluate('fixture.values.xFollowerQueue.total')==2
   assert await page.evaluate("fixture.requests.filter(url=>url.endsWith('usr_fixturefriend04')).length")==2
   # Persisted scope survives reload; a reset removes pending work, not collected links.
+  await expect(page.locator('#friendsPanel [data-x-reset]')).to_be_disabled()
+  await page.locator('#friendsPanel [data-x-collect]').click()
+  await page.wait_for_function("fixture.values.xFriendScan.phase==='waiting' && fixture.values.xFriendScan.items.length===1")
   await page.locator('#friendsPanel [data-x-reset]').click();await page.wait_for_function("fixture.values.xFriendScan.phase==='idle'")
   assert await page.evaluate('Object.keys(fixture.values.xProfileCache).length')==3
+  assert await page.evaluate('Object.keys(fixture.values.xFollowerCache).length')==2
   await page.reload();await page.locator('[data-tab=settings]').click();await expect(page.locator('#xFollowerBulkScope')).to_have_value('friends')
   backup=await page.evaluate("async()=> (await import('/settings-backup.js')).createSettingsBackup(fixture.values)")
   assert backup['settings']['xFollowers']['bulkScope']=='friends';assert backup['settings']['xFollowers']['scope']=='linked'
@@ -65,6 +82,6 @@ async def main():
   assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
   await page.locator('#xFollowerForm').screenshot(path='/tmp/vrc-friend-discovery-settings.png')
   assert errors==[],errors
-  await browser.close();print('PASS: all-friends option, empty local roster, authenticated discovery, pause/resume, no-link/error progress, reset, backup, reload and 390px layout')
+  await browser.close();print('PASS: all-friends option, empty local roster, authenticated discovery, X results saved before profile discovery completes, concurrent progress, pause/resume, no-link/error progress, reset, backup, reload and 390px layout')
 try:asyncio.run(main())
 finally:server.shutdown()
